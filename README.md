@@ -1,0 +1,492 @@
+# Veil
+
+Veil is a staged, native Go rewrite of [Arti](https://github.com/zydou/arti), the Rust Tor implementation. This is an independent, experimental project, not an official Tor Project release.
+
+**Current stage: experimental SOCKS5 client with local and public-network testing.** It authenticates relay channels, downloads and verifies directory documents over native one-hop directory circuits (pinned CREATE_FAST for public bootstrap, ntor afterward), refreshes private caches, and maintains sampled/confirmed/primary guards. It selects compatible guard/middle/exit paths and builds them with CREATE2, EXTEND2, and type-2 ntor. It multiplexes TCP streams through a cancellable Go `net.Conn` API with authenticated SENDME flow control and exit-side DNS. `veil proxy` exposes those streams through a loopback SOCKS5 CONNECT listener, with a fresh circuit for each connection. The Go implementation needs no Rust runtime, C Tor process, cgo, or external Go dependencies. An optional interoperability test launches C Tor separately as a test peer.
+
+## Browse the public internet
+
+From the repository directory:
+
+```sh
+make public-proxy
+```
+
+This builds the Go binary and runs the equivalent of:
+
+```sh
+./bin/veil proxy -public -state ./state-public -listen 127.0.0.1:9050
+```
+
+No `bootstrap.json`, Rust, or C Tor installation is needed. Public mode bundles
+nine authority identities and 200 pinned fallback relays from official Arti data;
+see [bootstrap provenance](directory/data/README.md). It authenticates the
+fallback channel, verifies an authority majority and every required descriptor,
+then builds application circuits through three directory-selected relays.
+
+Wait for the `socks5_ready` event. First startup downloads tens of megabytes and
+can take several minutes (10-minute startup deadline); progress goes to stderr.
+The private cache and persistent guards are reused on restart. Keep
+`state-public` between runs, use a separate state directory for private networks,
+and run only one Veil process per state directory. Ctrl-C stops the proxy.
+
+In another terminal, test it with:
+
+```sh
+curl --fail --max-time 90 --noproxy '' \
+  --socks5-hostname 127.0.0.1:9050 https://check.torproject.org/api/ip
+curl --fail --max-time 90 --noproxy '' \
+  --socks5-hostname 127.0.0.1:9050 https://example.com/
+```
+
+The first response should include `"IsTor":true`. `--socks5-hostname` sends the
+hostname to the exit for resolution; `--noproxy ''` prevents environment bypass
+rules from making this test connect directly. HTTPS certificate verification
+remains enabled. Public relay failures can make individual connections fail;
+there is currently no automatic circuit retry. Retry the request without
+clearing persistent guard state. If port 9050 is occupied, use
+`-listen 127.0.0.1:19050` and change the client port too.
+
+For a browser test, use a separate Firefox test profile. In its
+[connection settings](https://support.mozilla.org/en-US/kb/connection-settings-firefox),
+select manual proxy configuration, set **SOCKS Host** to **127.0.0.1**, port
+**9050**, select **SOCKS v5**, and enable **Proxy DNS when using SOCKS v5**.
+Leave HTTP/HTTPS proxy fields empty. Visit
+[the Tor checker](https://check.torproject.org/) after Veil reports readiness.
+Return that profile to its previous proxy setting when finished.
+
+Public HTTPS through Veil has been tested; details are in [VALIDATION.md](VALIDATION.md).
+This remains an experimental interoperability client: padding, traffic fingerprint
+parity and independent privacy review are incomplete. A normal browser configured
+with this proxy does not provide Tor Browser's privacy protections.
+
+## Try SOCKS5 locally
+
+From the repository directory, run:
+
+```sh
+make proxy-demo
+```
+
+This builds Veil, creates a temporary three-relay Tor network, starts private
+HTTP/DNS fixtures, and tests the native SOCKS5 server with `curl`. It prints:
+
+```text
+Veil SOCKS5 works: this HTTP response crossed three native Go Tor hops.
+```
+
+It then prints an exact `curl --socks5-hostname ...` command to paste into another
+terminal and stays running. Try the printed URL with `/large` for a 2 MiB
+response. Ctrl-C stops all demo processes and deletes their keys and state.
+Initial bootstrap can take up to 150 seconds. **No `bootstrap.json` is needed
+for this demo**, and it does not access the public Tor network or public internet.
+
+Requirements: Go 1.24+, Python 3, `curl`, and existing C Tor / `tor-gencert`
+executables. The launcher finds them on PATH or reuses the earlier temporary
+Tor build on this machine. To specify them yourself:
+
+```sh
+python3 scripts/proxy_demo.py --tor /absolute/path/to/tor \
+  --tor-gencert /absolute/path/to/tor-gencert
+```
+
+For the same self-check followed by automatic cleanup, run `make proxy-check`.
+Nothing is downloaded or installed by either command. C Tor supplies the test
+network's relays only; Veil handles SOCKS, the client TLS channel, circuit
+construction, encryption, streams, and flow control in Go.
+
+The localhost demo uses a compiled **test harness** to supply explicit private
+hop pins to the native builder. It runs the production SOCKS server, but does
+not bypass the production CLI's directory-based path selection. Localhost relays
+cannot satisfy that selector's subnet separation; there is no production switch
+to disable it. The demo exit permits only its local fixture port.
+
+## Run the proxy on your own controlled network
+
+With independently trusted bootstrap pins and a network whose relays satisfy
+subnet separation and exit policies:
+
+```sh
+./bin/veil proxy -config bootstrap.json -state ./state -listen 127.0.0.1:9050
+```
+
+The command restores or bootstraps a verified directory and keeps refreshing it.
+A `socks5_ready` JSON event reports the listening address once startup completes.
+Use `curl --socks5-hostname 127.0.0.1:9050 ...` or `socks5h://127.0.0.1:9050`
+so destination hostnames reach the exit without local DNS lookup. The JSON schema
+for your controlled network’s bootstrap pins is below. Use `-public` instead
+of `-config` for the bundled public Tor network setup above.
+
+Defaults are 16 simultaneous connections (including pending handshakes), a
+10-second SOCKS handshake, a 1-minute connect/build timeout, 5 minutes idle, and a
+1-hour maximum connection/circuit lifetime. `veil proxy -h` lists the controls.
+Listeners must be numeric loopback addresses. Every connection gets its own
+circuit, including connections with equal SOCKS username/password tokens; guards
+remain shared and persistent. Tokens are accepted as isolation-compatible client
+metadata, **not access-control credentials**. Other local processes can use the
+listener. No destinations, payloads, credentials, or selected paths are logged.
+
+CONNECT supports hostnames and numeric IPv4/IPv6 addresses. Hostnames currently
+use IPv4 exits. BIND, UDP, SOCKS4, GSSAPI, onion services, automatic retries,
+circuit pooling, and TCP half-close are unsupported. Tor END closes both
+stream directions. There is no direct-connect fallback. A fatal directory
+verification/state error stops the proxy; expired snapshots reject new circuits.
+One process must own the state directory. Public-network anonymity, traffic
+fingerprint parity, and complete production privacy behavior remain unvalidated.
+
+## Build and run
+
+Requires Go 1.24 or newer (the compatibility tests use standard-library SHAKE256).
+
+```sh
+go test ./...
+go build -trimpath -o bin/veil ./cmd/veil
+./bin/veil version
+./bin/veil help
+```
+
+Inspect a binary stream of already decrypted channel frames:
+
+```sh
+./bin/veil inspect -link 4 < cells.bin
+./bin/veil inspect -handshake -payload < handshake-and-cells.bin
+```
+
+`-handshake` reads the initial VERSIONS frame before switching to four-byte circuit IDs. Otherwise `-link` specifies the already negotiated link protocol, 4 or 5. Output is newline-delimited JSON. Fixed-cell payload lengths include the 509-byte padded body. `-payload` includes raw payloads; encrypted relay payloads remain encrypted. TLS packet captures must be decrypted and reassembled before using this tool.
+
+Check a relay using identity pins obtained independently from a trusted descriptor:
+
+```sh
+./bin/veil channel-check \
+  -address "$RELAY_IP_PORT" \
+  -rsa "$RSA_IDENTITY_HEX" \
+  -ed25519 "$ED25519_IDENTITY_HEX" \
+  -timeout 30s
+```
+
+The address must be a numeric `IP:port` (bracket IPv6). The RSA fingerprint is 40 hex characters and the Ed25519 identity is 64 hex characters. Both are required and checked. The command prints authenticated connection metadata as JSON and closes the connection; it does not build circuits or send application traffic. It makes a direct connection to the chosen relay, so it is not an anonymous operation. The separate directory-bootstrap command requires explicit authority and bootstrap-relay pins.
+
+## Implemented
+
+| Go package | Upstream area | Coverage |
+| --- | --- | --- |
+| `cell` | `tor-cell`, parts of `tor-linkspec` | Link 4/5 frames; initial/repeated VERSIONS; CERTS, AUTH_CHALLENGE, NETINFO; CREATE2, CREATED2, EXTEND2; original relay message encoding and padding |
+| `ntor` | `tor-proto/crypto/handshake/ntor.rs` | Type-2 client handshake; X25519; transcript authentication; HKDF-SHA256; 92-byte hop key derivation |
+| `relaycrypto` | `tor-proto/crypto/cell/tor1.rs` | Persistent AES-128-CTR layers and running SHA-1 digests; outbound targeting; inbound hop recognition; circuit extension; SENDME digest tags |
+| `torcert` | `tor-cert`, channel certificate checks | Ed25519 identity/signing/TLS chain; RSA identity and cross-certificate; validity, pin, and TLS binding checks |
+| `channel` | `tor-proto/channel`, client channel handshake | TLS 1.2/1.3; ordered client handshake; bounded cell queues; cancellation; random circuit IDs; teardown |
+| `directory` | `tor-netdoc`, initial `tor-dirmgr`/`tor-guardmgr`/path selection | Authority certificates, signed microdescriptor consensus, digest binding, native BEGIN_DIR fetches, private cache, refresh/retry manager, reusable channels, sampled/confirmed/primary guards, weighted path selection |
+| `circuit` | `tor-proto/circuit`, circuit construction | Verified three-hop selection, tracked guard attempts, CREATE2/EXTEND2, RELAY_EARLY budget, ordered relay messages, multiplexed `net.Conn` streams, SENDME/backpressure, deadlines/cancellation, bounded teardown |
+| `client` | Client lifecycle | Verified snapshot/guard integration, a dedicated circuit per connection, bounded concurrent circuits, lifetime ownership and SOCKS failure mapping |
+| `socks5` | SOCKS frontend | Loopback CONNECT, IPv4/IPv6/hostnames, token negotiation, bounded connections, timeouts, bidirectional relay and cleanup |
+| `cmd/veil` | Client and development tooling | `proxy`, version/help, offline frame inspection, pinned channel check, directory-check, directory-bootstrap, directory-watch, and circuit-check |
+
+The module path is currently `veil`; change it and the internal imports together when a hosting location is chosen. The public API is provisional.
+
+The offline codec retains unknown commands. Live channels reject unsupported commands and invalid handshake order, while ignoring padding and repeated VERSIONS as specified. The circuit package implements fixed three-hop construction and relay transport. Managed TCP streams use the circuit package; the directory package retains a dedicated single-stream, one-hop transport. PADDING_NEGOTIATE cells on link 5 are exposed to the caller; padding policy and scheduling are not yet implemented.
+
+## Authenticated channel API
+
+```go
+// trustedIdentity must come from a verified descriptor or out-of-band pins.
+ch, err := channel.Dial(ctx, channel.Target{
+    Address:  netip.MustParseAddrPort("127.0.0.1:9001"),
+    Identity: trustedIdentity,
+}, channel.Options{HandshakeTimeout: 30 * time.Second})
+if err != nil {
+    return err
+}
+defer ch.Close()
+info := ch.Info()
+_ = info
+```
+
+`ctx` governs the entire channel lifetime; canceling it closes the connection. `HandshakeTimeout` bounds TCP, TLS, and Tor negotiation separately. `Send` copies a frame into a bounded queue and waits for its write to complete. A canceled send that was already queued closes the connection because its delivery is ambiguous. A canceled `Receive` does not close the connection. Both methods unblock on channel failure; `Close` waits for the reader, writer, and context watcher to exit.
+
+Use `AllocateCircuitID` before sending circuit cells. It picks random IDs with the initiator's high bit set, rejects collisions, and never reuses an ID on the same channel. A 65,536-allocation lifetime cap bounds the retained ID set; open a new channel when exhausted. The receive queue applies backpressure when full. Circuit multiplexing and interpretation of received circuit messages remain future work.
+
+The TLS connection is never exposed before Tor certificate verification completes. Web PKI hostname/CA validation is replaced by the Tor identity-to-signing-key-to-TLS-certificate chain; TLS session resumption is disabled. Handshake work is bounded by time, cell count, and byte count. Client NETINFO sends no local address list or timestamp.
+
+## Directory verification and bootstrap
+
+Verify the recorded Arti test network offline (these certificates are expired, so this example supplies the fixture time):
+
+```sh
+./bin/veil directory-check \
+  -certificates directory/testdata/authorities.txt \
+  -consensus directory/testdata/consensus.txt \
+  -microdescriptors directory/testdata/microdescriptors.txt \
+  -authorities 0B8997614EC647C1C6B6A044E2B5408F0B823FB0,5B591AD684C1AB8E0AB76C839E93FD097526A4BC,8A1777F0BF97344A7ABB97530EEEE38A5BDE8A4D,D190BF3B00E311A9AEB6D62B51980E9B2109BAD1 \
+  -at 2000-01-01T00:02:30Z
+```
+
+`bootstrap.json` is a user-supplied file; Veil does not ship one or create it
+automatically. There are no bundled mainnet authority or fallback relay lists yet.
+
+To try the live watcher locally, use existing C Tor and `tor-gencert` executables:
+
+```sh
+make build
+python3 scripts/check_local_directory.py \
+  --tor /absolute/path/to/tor \
+  --gencert /absolute/path/to/tor-gencert \
+  --demo
+```
+
+Replace the two executable paths. The demo starts a private localhost network,
+generates its keys and a valid temporary `bootstrap.json`, bootstraps Veil, and
+runs `directory-watch` for you. Initial setup can take up to 150 seconds. It prints
+the exact watcher command and JSON status updates. Ctrl-C stops the watcher and
+Tor processes and removes all temporary configuration, keys, and state. The demo
+downloads and installs nothing and does not connect to the public Tor network.
+
+For your own controlled live network, save the following schema as `bootstrap.json`
+and fill it with independently trusted values:
+
+```json
+{
+  "authorities": ["AUTHORITY_RSA_FINGERPRINT_HEX40"],
+  "relay": {
+    "address": "127.0.0.1:9001",
+    "rsa": "RELAY_RSA_FINGERPRINT_HEX40",
+    "ed25519": "RELAY_ED25519_PUBLIC_KEY_HEX64",
+    "ntor": "RELAY_NTOR_PUBLIC_KEY_HEX64"
+  }
+}
+```
+
+Replace every placeholder; use the complete intended authority trust set, not just available signers. Then run:
+
+```sh
+./bin/veil directory-bootstrap -config bootstrap.json -state ./state -timeout 5m
+```
+
+The command requests certificates, a microdescriptor consensus, and all referenced microdescriptors over one-hop Tor circuits, using the configured relay for initial bootstrap and sampled guards once available. It never uses direct HTTP or DNS fallback. It checks a majority of **all configured authority identities**, certificate signatures and lifetimes, required client protocols, consensus validity, and every SHA-256 microdescriptor digest. Missing descriptors fail the entire bootstrap. The command writes a private, atomically replaced cache and prints directory metadata. It persists a guard sample for subsequent directory requests. It does not create application circuits.
+
+Keep the directory current until interrupted:
+
+```sh
+./bin/veil directory-watch -config bootstrap.json -state ./state
+```
+
+`directory-watch` restores verified cached state immediately, schedules a randomized refresh before expiry, and prints JSON when directory or retry status changes. `-timeout` optionally bounds the whole run. Refreshes use sampled directory guards after initial bootstrap. The manager uses capped, randomized retry delays; each download round shares one authenticated channel across separate one-hop circuits. It requests only microdescriptors absent from the cache, and verifies each response against the exact requested digest set.
+
+`directory.NewManager(cache, guards, bootstrapRelays, options)` provides the same lifecycle to Go callers. `Run(ctx)` blocks until canceled or a verification/state error occurs; `Refresh(ctx)` performs one bounded download round. `Snapshot()` is safe to call concurrently and refuses expired or not-yet-valid data, even during an outage. A failed refresh retains the previous verified snapshot only within its validity interval. Authentication, document, clock-validity, rollback, and state-write errors stop the automatic loop rather than triggering indefinite retries.
+
+`directory.Cache.Load(now)` re-verifies every document; `Store` rejects an older or conflicting consensus. The manager can authenticate a recently expired cache at its original validation time solely to reconnect to already sampled directory guards, for up to 24 hours after expiry. It never exposes that snapshot as an application directory or expands the sample from expired data. Older cache recovery is deliberately refused; long-offline recovery beyond that window remains future work. `Snapshot.Valid(now)` and `Fresh(now)` distinguish validity from freshness. `-at` exists only for offline inspection.
+
+`GuardStore` persists a bounded, bandwidth-weighted sample and confirmation order. Primary guards are derived from that state; failures do not delete identities or select an unrestricted new set. Separate directory reachability prevents a failed directory request from poisoning ordinary-circuit reachability. Guard dates are randomized, unlisted/old entries expire under live consensuses, retry delays are jittered, and pending non-primary attempts must pass a usability check. Existing version-1 single-guard files migrate while preserving the chosen identity as an unconfirmed sampled guard.
+
+Circuit builders use `GuardStore.Select`, report authenticated circuit success or failure through its `GuardAttempt`, check `Usability`, and call `Close` when done. Cancellation closes an attempt without recording a failure. Guard state write failures stop further selection until the store is reopened. `GuardStore.Guard` and `Snapshot.SelectPath(guardStore, port, ipv6, now)` remain offline previews, not circuit-attempt tracking. Path selection enforces flags/protocols, mutual fingerprint families/shared family IDs, IPv4 /16 or IPv6 /32 separation, and exit-port summaries. It does not guarantee an exit permits a particular destination address.
+
+Use one cache/guard-store owner per directory: there is no cross-process lock. State directories must have mode 0700 and files 0600. Only the default unrestricted guard context is implemented; bridges and custom entry/reachability filters require later work. Three-hop construction now uses tracked guard attempts; application path-bias accounting remains unimplemented. Count-valued guard parameters are capped at 1,024 to bound state. Sampling uses the current guard specification's count-based threshold; it does not reproduce Arti's bandwidth-fraction variant.
+
+Only the microdescriptor directory route is implemented. Full router-descriptor parsing, compressed downloads, consensus diffs, partial-directory sufficiency, and bundled mainnet trust/fallback lists remain future work. Link padding, traffic fingerprints, and complete production privacy behavior are not implemented or validated. Veil remains a controlled-network development implementation.
+
+## Three-hop circuit API
+
+```go
+// manager and guards share the same in-process state owner.
+snapshot, err := manager.Snapshot()
+if err != nil {
+    return err
+}
+circ, err := circuit.Build(ctx, snapshot, guards, circuit.Options{
+    Port: 443,
+    BuildTimeout: time.Minute,
+})
+if err != nil {
+    return err
+}
+defer circ.Close()
+```
+
+`Build` selects a tracked guard, then a weighted middle and exit with the existing
+family/subnet exclusions and exit-port summary checks. It authenticates CREATE2
+at the guard and sends two EXTEND2 messages in RELAY_EARLY cells, including both
+RSA and Ed25519 identities. Each new hop is added only after its ntor reply
+verifies. A successful full circuit confirms the guard; construction waits for
+guard usability and rechecks directory validity before returning. Parent
+cancellation does not penalize guards; extension failures do not mark an
+already authenticated guard unreachable. This milestone makes one build attempt,
+without automatic retries or path-bias accounting.
+
+`ctx` owns the circuit lifetime; the separate build timeout stops applying after
+construction. Each circuit owns a dedicated authenticated channel. `Send` and
+`Receive` expose low-level relay messages, hop indices, and digest tags. Outgoing
+messages are serialized through encryption and writing; incoming messages are
+authenticated in wire order and delivered through a bounded queue. Stream
+messages may target only the exit. Raw API callers must implement their own
+stream state and flow control. For application traffic, use `DialContext` below;
+a circuit rejects mixing managed streams with raw `Send`/`Receive` calls.
+
+The circuit sends at most eight RELAY_EARLY cells, including both extensions and
+the initial later-hop messages. Unsolicited extension replies, wrong-hop stream
+messages, invalid digests, malformed cells, DESTROY, and TRUNCATED terminate the
+circuit. Unknown authenticated commands and DROP are ignored with bounded runs.
+Canceled queued sends and individual receives leave the circuit usable; failed
+writes after encryption terminate it. `Close` joins the reader/lifetime loops and
+attempts a bounded DESTROY with reason NONE before closing the dedicated channel.
+Channel/circuit pooling and production padding remain future work. Protocol
+references: [circuit construction](https://spec.torproject.org/tor-spec/creating-circuits.html),
+[RELAY_EARLY](https://spec.torproject.org/tor-spec/relay-early.html), and
+[teardown](https://spec.torproject.org/tor-spec/tearing-down-circuits.html).
+
+For a controlled network with compatible exits and separated relay subnets,
+`circuit-check` re-verifies an **existing live cache**, builds a circuit, prints
+`authenticated_hops: 3`, and closes it without opening a stream:
+
+```sh
+./bin/veil circuit-check -state ./state -authorities "$AUTHORITY_FINGERPRINTS" -port 443
+```
+
+Set `AUTHORITY_FINGERPRINTS` to the full comma-separated trust set used for your
+directory bootstrap. Stop other processes using that state directory first;
+there is no cross-process state lock. The localhost `--demo` network has no exits
+and shares a subnet, so it deliberately cannot pass this production path selector.
+To validate construction locally, use the separate test-only interoperability
+check below; there is no production flag to bypass path restrictions.
+
+## TCP stream API
+
+```go
+// circ was built with Options{Port: 443}; ctx still owns its lifetime.
+conn, err := circ.DialContext(dialCtx, "tcp", "example.com:443")
+if err != nil {
+    return err
+}
+defer conn.Close()
+if err := conn.SetDeadline(time.Now().Add(30 * time.Second)); err != nil {
+    return err
+}
+// conn implements net.Conn. Wrap it with tls.Client for application TLS.
+```
+
+`DialContext` accepts `tcp`, `tcp4`, or `tcp6` and a numeric destination port.
+The port and IP family must match the circuit's selection options; build another
+circuit for other ports/families. `tcp` uses that selected family. Hostnames are
+sent in BEGIN for the exit to resolve; there is no local destination lookup or
+direct-connect fallback. ASCII DNS labels (including externally encoded IDNA)
+and numeric IPs are accepted; onion services and scoped IPv6 addresses are not.
+IPv6 is covered by wire-format tests, but the live test currently uses IPv4.
+
+Dial cancellation applies only until CONNECTED. Established streams support
+concurrent Read/Write, changing deadlines, and idempotent Close. END preserves
+buffered input before returning EOF (reason DONE) or a typed `circuit.StreamError`.
+Tor's current END closes both directions, so there is no `CloseWrite`/half-close.
+Local END always uses reason MISC. Channel/circuit failure unblocks streams;
+an interrupted write after encryption closes the circuit because delivery and
+cipher state are ambiguous. Cancellation while waiting for flow credit leaves
+other streams usable.
+
+The implementation uses fixed 500-cell stream windows and authenticated v1
+circuit SENDMEs with ordered digest matching. Every 100 outgoing DATA cells
+include unpredictable padding; replayed, forged, or wrong-hop acknowledgements
+close the circuit. Stream acknowledgements pause while unread data accumulates.
+Payload buffering is bounded to roughly 254 KB per stream, with at most 32
+open streams or ended streams that still retain unread data. Closed stream IDs
+retain bounded late-DATA credit and are never reused; 65,535 allocations exhaust
+a circuit. The verified `circwindow` is clamped to 100..1000; this implementation
+supports multiples of 100 and rejects unsupported SENDME versions before building.
+The raw circuit stream API does not negotiate congestion control, isolate application
+identities, pool circuits, retry failed streams, or implement production traffic
+padding. The `client`/SOCKS layer isolates connections by allocating separate circuits.
+
+Protocol references: [opening streams](https://spec.torproject.org/tor-spec/opening-streams.html),
+[flow control](https://spec.torproject.org/tor-spec/flow-control.html), and
+[closing streams](https://spec.torproject.org/tor-spec/closing-streams.html).
+
+## Library flow
+
+1. Obtain a relay identity and ntor public key from a **verified** directory descriptor. Use `directory.Verify` or `directory.Bootstrap` to authenticate microdescriptor directories against explicitly supplied authority roots.
+2. Call `ntor.Start(relay)` and put its request in `cell.EncodeCreate2(cell.HandshakeNtor, request[:])`, or in `cell.EncodeExtend2` for a later hop.
+3. Extract the length-delimited handshake from the reply with `cell.DecodeCreated2`, then call `state.Finish(reply)` once. Failed attempts consume the state too.
+4. Use the returned keys in `relaycrypto.NewClient(keys)` or `client.AddHop(keys)` after a successful extension.
+5. Encode a relay message using `cell.EncodeRelay`, then call `client.Encrypt(targetHop, body)`. Serialize the returned ciphertext in a RELAY or RELAY_EARLY channel cell as required by the circuit state machine.
+6. For received relay cells, call `client.Decrypt` **before** `cell.DecodeRelay`. An unauthenticated body invalidates all cipher state and requires circuit teardown.
+
+See the executable example in `cell/example_test.go`. The `circuit.Build` API handles construction and `Circuit.DialContext` opens managed `net.Conn` streams.
+
+Cipher and digest state persists across cells. Never reuse handshake secrets, share hop keys between circuits, or reorder encrypted cells. Cryptographic primitives come from Go's standard library; SHA-1 and AES-CTR here implement the original Tor protocol, not a new encryption scheme. The library has not undergone an independent security audit and provides no anonymity by itself.
+
+## Validation
+
+```sh
+make check  # vet, race detector, test coverage
+make security # gosec (requires an installed gosec executable)
+make fuzz   # nine bounded 10-second fuzz runs
+```
+
+The gosec scan uses all default rules. Narrow protocol/CLI exceptions and their
+audit command are documented in [SECURITY.md](SECURITY.md).
+
+Tests include upstream ntor handshake/key vectors, eight Tor-generated three-hop ciphertext vectors across 51 cells, mixed-hop bidirectional traffic, circuit extension, failed digest rollback, low-order X25519 key rejection, modified and truncated handshakes, invalid lengths, partial I/O, and parser fuzz targets. Certificate tests use Arti's recorded Chutney chain and reject byte mutations, truncation, wrong pins, expired certificates, and incorrect TLS bindings.
+
+Channel integration tests use a local Go TLS relay fixture over both in-memory pipes and localhost TCP, covering link 4/5 and TLS 1.2/1.3. A compiled-binary test runs `veil channel-check` against that fixture. Lifecycle tests cover stalled I/O, cancellation, bounded queues, concurrent sends/ID allocation, malformed ordering, handshake resource limits, and teardown. The suite needs permission to bind an ephemeral localhost port. Compatibility fixtures and exact provenance are documented in [UPSTREAM.md](UPSTREAM.md).
+
+Interoperability also passed against a running **C Tor 0.4.9.12** relay on localhost, negotiating link 5 and TLS 1.3, downloading its descriptor through native ntor/BEGIN_DIR, and rejecting wrong identity and ntor keys. To repeat it with an existing Tor executable:
+
+```sh
+make build
+go build -o bin/directory-probe scripts/directory_probe.go
+python3 scripts/check_local_tor.py --tor /absolute/path/to/tor --veil bin/veil --directory-probe bin/directory-probe
+```
+
+The script starts a temporary local relay with private keys/configuration, no SOCKS or exit service, no descriptor publication, no default authorities/fallback directories, and a dummy localhost authority. It stops that process and removes its temporary keys afterward. It downloads and installs nothing.
+
+A second check creates a private network with one authority and two additional
+non-exit relays and runs the complete Go bootstrap command:
+
+```sh
+python3 scripts/check_local_directory.py \
+  --tor /absolute/path/to/tor \
+  --gencert /absolute/path/to/tor-gencert \
+  --veil bin/veil --watch
+```
+
+This passed against C Tor 0.4.9.12, verifying the live authority signature and
+three microdescriptors, refreshing to a later consensus, confirming and preserving the guard sample, and restoring the cache on restart. It uses only localhost
+authorities and removes all temporary processes, keys, and state on exit.
+
+
+The three-hop interoperability check uses the same temporary network, with a
+compiled Go **test binary** receiving explicit local public pins:
+
+```sh
+make build
+go test -c -o bin/circuit-test ./circuit
+python3 scripts/check_local_directory.py \
+  --tor /absolute/path/to/tor \
+  --gencert /absolute/path/to/tor-gencert \
+  --circuit-test bin/circuit-test
+```
+
+It builds a three-hop circuit, exchanges a small BEGIN_DIR request/response
+through all three hops, and rejects a wrong middle identity and last-hop ntor
+key. All peers remain non-exits. This tests wire interoperability independently
+of production path selection, which is covered with freshly signed directory
+fixtures and separated subnets. It does not validate public-network operation,
+large application transfers, or stream flow control.
+
+The application-stream check adds a private DNS fixture and an authority exit
+restricted to one loopback echo port:
+
+```sh
+go test -c -race -o bin/circuit-test ./circuit
+python3 scripts/check_local_directory.py \
+  --tor /absolute/path/to/tor \
+  --gencert /absolute/path/to/tor-gencert \
+  --stream-test bin/circuit-test
+```
+
+It passed against C Tor 0.4.9.12: four concurrent 2 MiB round trips, exit-side DNS,
+EOF, DNS/exit-policy failures, pending-dial cancellation, read deadlines, and
+circuit-close propagation. All network fixtures bind only to localhost and are
+removed on exit. This test uses explicit test-only hop pins; production path
+selection still enforces subnet separation and verified exit summaries.
+
+Remaining work includes pooling/retries, cross-process state ownership, padding and independent privacy/security review; see [ROADMAP.md](ROADMAP.md). Public HTTPS interoperability has been tested. TLS traffic fingerprint parity and end-to-end anonymity properties remain **unvalidated**. Recorded results and limits are in [VALIDATION.md](VALIDATION.md).
+
+## License
+
+MIT; see [LICENSE](LICENSE). Upstream-derived protocol code and fixtures retain The Tor Project's copyright notice. This port does not use Arti's optional LGPL components.

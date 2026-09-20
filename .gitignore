@@ -1,0 +1,5 @@
+/bin/
+/coverage.out
+__pycache__/
+
+/state-public/
