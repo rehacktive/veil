@@ -195,3 +195,22 @@ errors**, with the unchanged **18** protocol annotations. No cryptographic
 changes, dependencies or suppressions were introduced. Race tests and vet pass;
 live SOCKS checks rejected hostname, IPv4 and IPv6 destinations while the public
 Tor Project v3 onion site returned HTTP 200. See [VALIDATION.md](VALIDATION.md).
+
+## Debug logging follow-up
+
+Proxy diagnostics are opt-in through `-debug`; no global logger is installed and
+normal proxy operation is silent by default. Help and fatal errors remain visible.
+The CLI uses a shared standard-library slog text handler on stderr, which
+serializes concurrent records and escapes values. Request IDs are numeric counters,
+independent of SOCKS isolation credentials.
+
+Debug output deliberately includes destination names, exit relay metadata and
+onion directory/introduction relay addresses. SOCKS credentials, isolation tokens,
+cryptographic keys, descriptor contents and application payloads are not recorded.
+Veil creates no log files automatically. Library loggers are explicitly supplied
+per instance; nil disables logging, including inherited request logging.
+
+Full race tests and vet pass. Gosec reports **47 production files, zero findings
+and zero loading errors**, with the existing **18** protocol annotations unchanged.
+No dependency or suppression was added. Quiet-mode, credential exclusion,
+concurrent escaping and live public HTTPS checks are recorded in VALIDATION.md.

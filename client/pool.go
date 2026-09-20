@@ -7,6 +7,7 @@ import (
 	"sync"
 	"time"
 	"veil/circuit"
+	"veil/internal/diagnostics"
 )
 
 type poolKey struct {
@@ -163,6 +164,10 @@ func (d *Dialer) acquirePooled(ctx context.Context, key poolKey, isOnion bool) (
 			if e.refs < 16 {
 				e.refs++
 				p.mu.Unlock()
+				diagnostics.Log(ctx, d.options.Logger, "circuit_reused", "onion", isOnion)
+				if !isOnion {
+					d.logExit(ctx, e.c)
+				}
 				return e, nil
 			}
 		}

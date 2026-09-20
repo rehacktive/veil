@@ -6,12 +6,14 @@ package client
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"net"
 	"net/netip"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
+	"veil/internal/diagnostics"
 
 	"veil/circuit"
 	"veil/directory"
@@ -33,6 +35,7 @@ type buildFunc func(context.Context, *directory.Snapshot, circuit.Options) (stre
 var ErrOnionOnly = errors.New("onion-only mode requires a valid v3 onion destination")
 
 type Options struct {
+	Logger             *slog.Logger  // Optional debug logger; nil is silent. May reveal destinations and relay metadata.
 	OnionOnly          bool          // Reject every application destination except a valid v3 onion address.
 	MaxPooledCircuits  int           // Pool bound including active/building/idle entries; default 16, max 256.
 	CircuitMaxAge      time.Duration // Stop attaching streams after this age; default 10 minutes. Active streams drain.
@@ -133,8 +136,10 @@ func (d *Dialer) DialContext(ctx context.Context, network, address string) (net.
 	if err != nil || number == 0 {
 		return nil, errors.New("invalid destination port")
 	}
+	diagnostics.Log(ctx, d.options.Logger, "destination_requested", "network", network, "destination", address)
 	if d.options.OnionOnly {
 		if _, err := onion.ParseAddress(host); err != nil {
+			diagnostics.Log(ctx, d.options.Logger, "destination_blocked", "reason", "onion-only")
 			return nil, &socks5.ReplyError{Code: 2, Err: ErrOnionOnly}
 		}
 	}

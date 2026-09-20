@@ -2,22 +2,23 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"flag"
-	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"time"
+	"veil/internal/diagnostics"
 
 	"veil/client"
 	"veil/directory"
 	"veil/socks5"
 )
 
-func proxy(ctx context.Context, args []string, out, diagnostics io.Writer) (result error) {
+func proxy(ctx context.Context, args []string, _, diagnosticOutput io.Writer) (result error) {
 	f := flag.NewFlagSet("proxy", flag.ContinueOnError)
-	f.SetOutput(diagnostics)
+	f.SetOutput(diagnosticOutput)
+	debug := f.Bool("debug", false, "log proxy activity, destinations and exit relay details to stderr")
 	onionOnly := f.Bool("onion-only", false, "dark mode: permit only valid v3 onion application destinations")
 	public := f.Bool("public", false, "use bundled public Tor authority/fallback pins; no bootstrap JSON needed")
 	config := f.String("config", "", "bootstrap JSON with trusted authority and relay pins")
@@ -55,6 +56,9 @@ func proxy(ctx context.Context, args []string, out, diagnostics io.Writer) (resu
 			*bootstrap = 10 * time.Minute
 		}
 	}
+	logger := diagnostics.New(*debug, diagnosticOutput)
+	diagnostics.Log(ctx, logger, "proxy_starting", "onion_only", *onionOnly, "public", *public)
+	defer func() { diagnostics.Log(ctx, logger, "proxy_stopped", "error", result) }()
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	// Bind before opening state or bootstrapping, to report occupied/unsafe
@@ -80,21 +84,19 @@ func proxy(ctx context.Context, args []string, out, diagnostics io.Writer) (resu
 		return err
 	}
 
-	if *public {
-		if _, err := fmt.Fprintln(diagnostics, "Loading the public Tor directory; first bootstrap may take several minutes..."); err != nil {
-			return err
-		}
+	if logger != nil {
+		diagnostics.Log(ctx, logger, "directory_bootstrap", "note", "first bootstrap may take several minutes")
 		progressCtx, stopProgress := context.WithCancel(ctx)
 		progressDone := make(chan struct{})
-		go func() { defer close(progressDone); publicProgress(progressCtx, manager, diagnostics) }()
+		go func() { defer close(progressDone); directoryProgress(progressCtx, manager, logger) }()
 		defer func() { stopProgress(); <-progressDone }()
 	}
-	dialer, err := client.New(ctx, manager, guards, client.Options{OnionOnly: *onionOnly, DisableReuse: !*reuse, CircuitMaxAge: *circuitAge, CircuitIdleTimeout: *circuitIdle, MaxPooledCircuits: *maxPool, BuildTimeout: *build, ConnectTimeout: *connect, OnionTimeout: *onionTimeout, BuildAttempts: *attempts, MaxCircuits: *maxConnections})
+	dialer, err := client.New(ctx, manager, guards, client.Options{Logger: logger, OnionOnly: *onionOnly, DisableReuse: !*reuse, CircuitMaxAge: *circuitAge, CircuitIdleTimeout: *circuitIdle, MaxPooledCircuits: *maxPool, BuildTimeout: *build, ConnectTimeout: *connect, OnionTimeout: *onionTimeout, BuildAttempts: *attempts, MaxCircuits: *maxConnections})
 	if err != nil {
 		return err
 	}
 	defer func() { result = errors.Join(result, dialer.Close()) }()
-	return serveProxy(ctx, listener, manager, dialer.DialContext, *bootstrap, socks5.Options{OnionOnly: *onionOnly, ConnectTimeout: *connect, OnionTimeout: *onionTimeout, IdleTimeout: *idle, MaxLifetime: *lifetime, MaxConnections: *maxConnections}, out)
+	return serveProxy(ctx, listener, manager, dialer.DialContext, *bootstrap, socks5.Options{Logger: logger, OnionOnly: *onionOnly, ConnectTimeout: *connect, OnionTimeout: *onionTimeout, IdleTimeout: *idle, MaxLifetime: *lifetime, MaxConnections: *maxConnections})
 }
 
 type proxyDirectory interface {
@@ -102,7 +104,7 @@ type proxyDirectory interface {
 	Snapshot() (*directory.Snapshot, error)
 }
 
-func serveProxy(ctx context.Context, listener net.Listener, manager proxyDirectory, dial socks5.DialFunc, bootstrap time.Duration, options socks5.Options, out io.Writer) error {
+func serveProxy(ctx context.Context, listener net.Listener, manager proxyDirectory, dial socks5.DialFunc, bootstrap time.Duration, options socks5.Options) error {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	defer listener.Close()
@@ -125,15 +127,7 @@ func serveProxy(ctx context.Context, listener net.Listener, manager proxyDirecto
 	if options.OnionOnly {
 		mode = "onion-only"
 	}
-	status := struct {
-		Mode      string `json:"mode"`
-		Event     string `json:"event"`
-		Listen    string `json:"listen"`
-		Isolation string `json:"isolation"`
-	}{mode, "socks5_ready", listener.Addr().String(), "SOCKS tokens + destination; untagged connections dedicated"}
-	if err = json.NewEncoder(out).Encode(status); err != nil {
-		return err
-	}
+	diagnostics.Log(ctx, options.Logger, "socks5_ready", "mode", mode, "listen", listener.Addr().String())
 	served := make(chan error, 1)
 	go func() { served <- socks5.Serve(ctx, listener, dial, options) }()
 	select {
@@ -186,10 +180,10 @@ func openPublicDirectory(state string) (*directory.Manager, *directory.GuardStor
 	return manager, guards, err
 }
 
-func publicProgress(ctx context.Context, m *directory.Manager, out io.Writer) {
+func directoryProgress(ctx context.Context, m *directory.Manager, logger *slog.Logger) {
 	tick := time.NewTicker(5 * time.Second)
 	defer tick.Stop()
-	previous := ""
+	var previous directory.ManagerStatus
 	for {
 		select {
 		case <-ctx.Done():
@@ -197,18 +191,12 @@ func publicProgress(ctx context.Context, m *directory.Manager, out io.Writer) {
 		case <-tick.C:
 		}
 		status := m.Status()
-		if status.Live {
-			return
-		}
 		if status.Phase == "" {
 			continue
 		}
-		line := fmt.Sprintf("directory: %s; %d requests, %d bytes; failed attempts=%d\n", status.Phase, status.DownloadRequests, status.DownloadBytes, status.Failures)
-		if line != previous {
-			if _, err := io.WriteString(out, line); err != nil {
-				return
-			}
-			previous = line
+		if status != previous {
+			diagnostics.Log(ctx, logger, "directory_progress", "phase", status.Phase, "live", status.Live, "requests", status.DownloadRequests, "bytes", status.DownloadBytes, "failed_attempts", status.Failures, "error", status.LastError)
+			previous = status
 		}
 	}
 }

@@ -8,12 +8,15 @@ import (
 	"encoding/binary"
 	"errors"
 	"io"
+	"log/slog"
 	"net"
 	"net/netip"
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
+	"veil/internal/diagnostics"
 
 	"veil/isolation"
 	"veil/onion"
@@ -22,6 +25,7 @@ import (
 type DialFunc func(context.Context, string, string) (net.Conn, error)
 
 type Options struct {
+	Logger           *slog.Logger  // Optional debug logger; nil is silent. May reveal destinations and relay metadata.
 	OnionOnly        bool          // Reject non-v3-onion CONNECT destinations before calling the dialer.
 	MaxConnections   int           // Default 16, maximum 256; includes pending handshakes.
 	HandshakeTimeout time.Duration // Default 10 seconds.
@@ -78,7 +82,8 @@ func Listen(ctx context.Context, address string) (net.Listener, error) {
 
 // Serve owns and closes listener and all accepted connections. It waits for
 // handlers to stop before returning. dial must obey its context and return a
-// net.Conn whose Close interrupts I/O. No destinations or credentials are logged.
+// net.Conn whose Close interrupts I/O. Debug logging is opt-in; credentials and
+// payloads are never logged.
 func Serve(ctx context.Context, listener net.Listener, dial DialFunc, options Options) error {
 	opts, err := options.defaults()
 	if err != nil || dial == nil {
@@ -98,6 +103,7 @@ func Serve(ctx context.Context, listener net.Listener, dial DialFunc, options Op
 	defer stop()
 	slots := make(chan struct{}, opts.MaxConnections)
 	var wg sync.WaitGroup
+	var requests atomic.Uint64
 	defer func() { cancel(); wg.Wait() }()
 	for {
 		conn, err := listener.Accept()
@@ -110,14 +116,22 @@ func Serve(ctx context.Context, listener net.Listener, dial DialFunc, options Op
 		select {
 		case slots <- struct{}{}:
 			wg.Add(1)
-			go func() { defer wg.Done(); defer func() { <-slots }(); handle(ctx, conn, dial, opts) }()
+			requestContext := ctx
+			if opts.Logger != nil {
+				requestContext = diagnostics.WithLogger(ctx, opts.Logger.With("request_id", requests.Add(1)))
+			}
+			go func() { defer wg.Done(); defer func() { <-slots }(); handle(requestContext, conn, dial, opts) }()
 		default:
+			diagnostics.Log(ctx, opts.Logger, "socks_capacity_rejected")
 			_ = conn.Close()
 		}
 	}
 }
 
 func handle(parent context.Context, local net.Conn, dial DialFunc, o Options) {
+	started := time.Now()
+	diagnostics.Log(parent, o.Logger, "socks_connection_accepted")
+	defer func() { diagnostics.Log(parent, o.Logger, "socks_connection_closed", "duration", time.Since(started)) }()
 	defer local.Close()
 	ctx, cancel := context.WithTimeout(parent, o.MaxLifetime)
 	defer cancel()
@@ -129,6 +143,7 @@ func handle(parent context.Context, local net.Conn, dial DialFunc, o Options) {
 	var err error
 	ctx, err = negotiate(ctx, local)
 	if err != nil {
+		diagnostics.Log(ctx, o.Logger, "socks_handshake_failed", "error", err)
 		return
 	}
 	applicationIP, _, splitErr := net.SplitHostPort(local.RemoteAddr().String())
@@ -139,13 +154,16 @@ func handle(parent context.Context, local net.Conn, dial DialFunc, o Options) {
 	network, address, code, err := request(local)
 	if err != nil {
 		_ = reply(local, code)
+		diagnostics.Log(ctx, o.Logger, "socks_request_rejected", "reply", code, "error", err)
 		return
 	}
+	diagnostics.Log(ctx, o.Logger, "socks_connect", "network", network, "destination", address)
 	// The connect timeout covers the native circuit build as well as BEGIN.
 	budget := o.ConnectTimeout
 	host, _, _ := net.SplitHostPort(address)
 	if o.OnionOnly {
 		if _, err := onion.ParseAddress(host); err != nil {
+			diagnostics.Log(ctx, o.Logger, "destination_blocked", "reason", "onion-only", "reply", 2)
 			_ = reply(local, 2)
 			return
 		}
@@ -176,6 +194,11 @@ func handle(parent context.Context, local net.Conn, dial DialFunc, o Options) {
 			code = 6
 		}
 		_ = reply(local, code)
+		cause := err
+		if re != nil && re.Err != nil {
+			cause = re.Err
+		}
+		diagnostics.Log(ctx, o.Logger, "socks_connect_failed", "reply", code, "error", cause)
 		return
 	}
 	if remote == nil {
@@ -189,6 +212,7 @@ func handle(parent context.Context, local net.Conn, dial DialFunc, o Options) {
 	if err = reply(local, 0); err != nil {
 		return
 	}
+	diagnostics.Log(ctx, o.Logger, "socks_connected", "setup_duration", time.Since(started))
 	bridge(ctx, local, remote, o.IdleTimeout)
 }
 

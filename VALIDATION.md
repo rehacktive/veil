@@ -1,3 +1,34 @@
+# Opt-in debug logging validation
+
+Run on 2026-09-20, macOS arm64, Go 1.27.1.
+
+- `go test -race ./... -timeout=120s` and `go vet ./...`: passed.
+- Gosec: **47 production files, zero findings, zero loading errors**, with the
+  unchanged **18** existing protocol annotations. Binary rebuilt successfully.
+- Tests cover explicit `-debug` / `-debug=false`, per-invocation logger isolation,
+  quiet readiness/request rejection/shutdown, debug circuit reuse, underlying
+  SOCKS failure reporting, credential/token/payload exclusion, and concurrent
+  records with escaped newline and terminal-control characters.
+- CLI lifecycle tests now consume debug readiness records. Readiness is no longer
+  emitted to stdout, and normal operation is silent without `-debug`.
+
+## Live CLI checks
+
+The rebuilt executable used the existing persistent public state. A quiet
+`-onion-only` proxy on loopback port 19051 completed SOCKS negotiation and rejected
+a clearnet CONNECT with reply 2. Both stdout and stderr remained **zero bytes**
+from startup through SIGINT shutdown.
+
+A proxy with `-debug` on loopback port 19052 fetched the public HTTPS Tor checker
+through SOCKS5 with explicit isolation credentials and normal TLS verification.
+The response confirmed **IsTor=true**. Stderr contained startup/readiness,
+request IDs, circuit construction, exit relay details, successful connection
+setup and closure, and shutdown records. Stdout remained empty and the supplied
+credentials were absent from the logs. Both test proxies exited successfully;
+persistent directory and guard state was retained.
+
+---
+
 # Veil 0.12 onion-only mode validation
 
 Run on 2026-09-20, macOS arm64, Go 1.27.1.

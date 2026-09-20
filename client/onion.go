@@ -18,6 +18,7 @@ import (
 	"veil/cell"
 	"veil/circuit"
 	"veil/directory"
+	"veil/internal/diagnostics"
 	"veil/isolation"
 	"veil/onion"
 )
@@ -37,6 +38,7 @@ func shuffle[T any](items []T) error {
 }
 
 func (d *Dialer) buildOnion(life, setup context.Context, guards *directory.GuardStore, host string, port uint16) (streamCircuit, error) {
+	diagnostics.Log(setup, d.options.Logger, "onion_setup", "exit", "none (onion rendezvous)")
 	id, err := onion.ParseAddress(host)
 	if err != nil {
 		return nil, err
@@ -68,10 +70,12 @@ func (d *Dialer) buildOnion(life, setup context.Context, guards *directory.Guard
 			if err := setup.Err(); err != nil {
 				return nil, [32]byte{}, err
 			}
+			diagnostics.Log(setup, d.options.Logger, "onion_descriptor_fetch", "hsdir", target.Address().String())
 			request, cancel := context.WithTimeout(setup, 30*time.Second)
 			raw, e := fetchOnionDescriptor(request, snapshot, guards, target, blinded, d.options.BuildTimeout)
 			cancel()
 			if e != nil {
+				diagnostics.Log(setup, d.options.Logger, "onion_descriptor_fetch_failed", "error", e)
 				last = e
 				if !errors.Is(e, errOnionDescriptorMissing) && !errors.Is(e, directory.ErrPath) && !retryableBuild(e) {
 					return nil, [32]byte{}, e
@@ -106,6 +110,7 @@ func (d *Dialer) buildOnion(life, setup context.Context, guards *directory.Guard
 	if err != nil {
 		return nil, err
 	}
+	diagnostics.Log(setup, d.options.Logger, "onion_descriptor_ready", "introduction_points", len(descriptor.Introductions))
 	var last error
 	if err := shuffle(descriptor.Introductions); err != nil {
 		return nil, err
@@ -128,11 +133,14 @@ func (d *Dialer) buildOnion(life, setup context.Context, guards *directory.Guard
 			last = e
 			continue
 		}
+		diagnostics.Log(setup, d.options.Logger, "onion_introduction", "relay", target.Address().String())
 		c, e := connectOnion(life, setup, snapshot, guards, target, intro, sub, host, port, d.options.BuildTimeout)
 		if e == nil {
+			diagnostics.Log(setup, d.options.Logger, "onion_rendezvous_ready", "exit", "none")
 			return c, nil
 		}
 		last = e
+		diagnostics.Log(setup, d.options.Logger, "onion_introduction_failed", "error", e)
 		if !retryableBuild(e) {
 			return nil, e
 		}

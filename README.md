@@ -24,8 +24,10 @@ see [bootstrap provenance](directory/data/README.md). It authenticates the
 fallback channel, verifies an authority majority and every required descriptor,
 then builds application circuits through three directory-selected relays.
 
-Wait for the `socks5_ready` event. First startup downloads tens of megabytes and
-can take several minutes (10-minute startup deadline); progress goes to stderr.
+The proxy is quiet by default. Add `-debug` to the command above to see
+bootstrap progress and the `socks5_ready` message on stderr. First startup
+downloads tens of megabytes and can take several minutes (10-minute startup
+deadline); SOCKS requests are served once bootstrap completes.
 The private cache and persistent guards are reused on restart. Keep
 `state-public` between runs, use a separate state directory for private networks,
 and run only one Veil process per state directory. An OS lock rejects another
@@ -56,7 +58,7 @@ For a browser test, use a separate Firefox test profile. In its
 select manual proxy configuration, set **SOCKS Host** to **127.0.0.1**, port
 **9050**, select **SOCKS v5**, and enable **Proxy DNS when using SOCKS v5**.
 Leave HTTP/HTTPS proxy fields empty. Visit
-[the Tor checker](https://check.torproject.org/) after Veil reports readiness.
+[the Tor checker](https://check.torproject.org/) once bootstrap completes (`socks5_ready` when debugging).
 Return that profile to its previous proxy setting when finished.
 
 Public HTTPS through Veil has been tested; details are in [VALIDATION.md](VALIDATION.md).
@@ -66,7 +68,7 @@ with this proxy does not provide Tor Browser's privacy protections.
 
 ## Connect to v3 onion services
 
-Start the same `make public-proxy` command above. Once `socks5_ready` appears,
+Start the same `make public-proxy` command above. Once bootstrap completes,
 connect to Tor Project's public onion site:
 
 ```sh
@@ -105,8 +107,8 @@ make build
 ./bin/veil proxy -public -onion-only -state ./state-public -listen 127.0.0.1:9050
 ```
 
-Wait for `socks5_ready` with `"mode":"onion-only"`, then use the onion curl
-command above. Ordinary hostnames and literal IPv4/IPv6 destinations are rejected
+Use the onion curl command above once bootstrap completes. With `-debug`,
+readiness is reported as `socks5_ready mode=onion-only`. Ordinary hostnames and literal IPv4/IPv6 destinations are rejected
 with SOCKS reply **2** (connection not allowed by ruleset). Malformed requests
 may receive parser errors instead. Invalid, legacy v2 and unsupported onion
 addresses are also rejected; only valid supported v3 addresses proceed.
@@ -119,10 +121,40 @@ policy failures can be checked with `errors.Is(err, client.ErrOnionOnly)`.
 A standalone SOCKS server can also use `socks5.Options{OnionOnly: true}`.
 
 The flag defaults to false and is not persisted in the state directory; include
-it each time you start dark mode. Normal mode reports `"mode":"all"`.
+it each time you start dark mode. Debug output reports `mode=all` in normal mode.
 `-public` still selects public Tor bootstrap data. Veil must still contact Tor
 relays/directories by IP; this is an application-destination restriction, not an
 IP firewall or a block on connections applications make outside this proxy.
+
+## Debug output
+
+Add `-debug` when launching the proxy:
+
+```sh
+./bin/veil proxy -public -state ./state-public -debug
+# Onion-only, with the same diagnostics:
+./bin/veil proxy -public -state ./state-public -onion-only -debug
+```
+
+Timestamped terminal messages go to **stderr**. They report startup, directory
+bootstrap/refresh progress, readiness, SOCKS requests and failures, policy blocks,
+circuit build attempts/retries/reuse, connection setup time and duration, and
+shutdown. SOCKS connections carry a numeric `request_id` so concurrent activity
+can be followed. Clearnet circuits report the exit relay's nickname, fingerprint
+and advertised relay address; that address is not necessarily the outbound IP
+seen by a website. Onion setup reports descriptor fetching, introduction attempts
+and rendezvous completion, with `exit=none`.
+
+Logs include destination hostnames/onion names and relay metadata. They exclude
+SOCKS credentials, isolation tokens, keys, descriptor contents and traffic
+payloads. Values are escaped, and concurrent records are serialized. Veil writes
+no log files automatically.
+
+Without `-debug` (or with `-debug=false`), the proxy produces no normal logs,
+including no progress or readiness event on stdout. Help and fatal errors remain
+visible. Debug mode is not persisted; enable it explicitly on each launch.
+Library users may supply an optional `*slog.Logger` through `client.Options.Logger`
+or `socks5.Options.Logger`; nil is silent and no global logger is installed.
 
 ## Reuse circuits within a session
 
@@ -225,7 +257,8 @@ subnet separation and exit policies:
 ```
 
 The command restores or bootstraps a verified directory and keeps refreshing it.
-A `socks5_ready` JSON event reports the listening address once startup completes.
+With `-debug`, a `socks5_ready` message reports the listening address once
+startup completes. Without the flag, normal operation produces no logs.
 Use `curl --socks5-hostname 127.0.0.1:9050 ...` or `socks5h://127.0.0.1:9050`
 so destination hostnames reach Veil without local DNS lookup. Ordinary names
 resolve at the exit; v3 onion names use the service rendezvous protocol. The JSON schema
@@ -243,7 +276,8 @@ Listeners must be numeric loopback addresses. Explicit SOCKS tokens permit reuse
 within the same application IP, listener, destination, port and address family.
 Untagged connections remain dedicated; guards stay shared and persistent. Tokens
 are isolation metadata, **not access-control credentials**. Other local processes can use the
-listener. No destinations, payloads, credentials, or selected paths are logged.
+listener. Debug mode logs destinations and exit relay metadata; payloads, credentials
+and isolation tokens are never logged.
 
 CONNECT supports hostnames and numeric IPv4/IPv6 addresses. Hostnames currently
 use IPv4 exits. BIND, UDP, SOCKS4, GSSAPI, automatic stream retries,

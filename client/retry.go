@@ -11,6 +11,8 @@ import (
 	"time"
 
 	"veil/circuit"
+	"veil/directory"
+	"veil/internal/diagnostics"
 )
 
 // A retry re-enters the normal verified selector with the SAME GuardStore.
@@ -28,12 +30,16 @@ func (d *Dialer) buildCircuit(life, setup context.Context, options circuit.Optio
 			return nil, err
 		}
 		attemptLife, cancel := context.WithCancel(life)
+		diagnostics.Log(setup, d.options.Logger, "circuit_build", "attempt", attempt+1, "port", options.Port, "ipv6", options.IPv6)
 		c, err := d.build(attemptLife, snapshot, options)
 		if err == nil {
+			diagnostics.Log(setup, d.options.Logger, "circuit_ready", "attempt", attempt+1)
+			d.logExit(setup, c)
 			// Parent cancellation/ownedConn.Close owns the successful attempt.
 			return &attemptCircuit{streamCircuit: c, cancel: cancel}, nil
 		}
 		cancel()
+		diagnostics.Log(setup, d.options.Logger, "circuit_build_failed", "attempt", attempt+1, "error", err)
 		if c != nil {
 			err = errors.Join(err, c.Close())
 		}
@@ -46,6 +52,7 @@ func (d *Dialer) buildCircuit(life, setup context.Context, options circuit.Optio
 		if attempt+1 >= d.options.BuildAttempts || !retryableBuild(err) {
 			return nil, err
 		}
+		diagnostics.Log(setup, d.options.Logger, "circuit_retry", "next_attempt", attempt+2)
 		base := min(250*time.Millisecond*time.Duration(1<<attempt), time.Second)
 		if err := d.wait(life, base); err != nil {
 			if setup.Err() != nil {
@@ -119,3 +126,16 @@ func waitBuildRetry(ctx context.Context, base time.Duration) error {
 }
 
 func (c *attemptCircuit) Err() error { return circuitError(c.streamCircuit) }
+
+func (d *Dialer) logExit(ctx context.Context, c streamCircuit) {
+	if d.options.Logger == nil {
+		return
+	}
+	if wrapped, ok := c.(*attemptCircuit); ok {
+		c = wrapped.streamCircuit
+	}
+	if routed, ok := c.(interface{ Path() directory.Path }); ok {
+		exit := routed.Path().Exit
+		diagnostics.Log(ctx, d.options.Logger, "exit_relay", "nickname", exit.Nickname(), "address", exit.Address().String(), "identity", exit.Identity().String())
+	}
+}
