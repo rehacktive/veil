@@ -106,7 +106,7 @@ func directoryBootstrap(ctx context.Context, args []string, out, diagnostics io.
 	return directoryManage(ctx, args, out, diagnostics, false)
 }
 
-func directoryManage(ctx context.Context, args []string, out, diagnostics io.Writer, watch bool) error {
+func directoryManage(ctx context.Context, args []string, out, diagnostics io.Writer, watch bool) (result error) {
 	command := "directory-bootstrap"
 	defaultTimeout := 5 * time.Minute
 	if watch {
@@ -127,6 +127,11 @@ func directoryManage(ctx context.Context, args []string, out, diagnostics io.Wri
 	if f.NArg() != 0 || *config == "" || *state == "" || *timeout < 0 || (!watch && *timeout == 0) {
 		return fmt.Errorf("%s requires -config, -state, and a valid -timeout", command)
 	}
+	lock, err := directory.LockState(*state)
+	if err != nil {
+		return err
+	}
+	defer func() { result = errors.Join(result, lock.Close()) }()
 	manager, _, err := openDirectory(*config, *state)
 	if err != nil {
 		return err

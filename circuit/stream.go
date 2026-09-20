@@ -50,6 +50,11 @@ func (c *Circuit) DialContext(ctx context.Context, network, address string) (net
 	if err != nil {
 		return nil, err
 	}
+	return c.dialStream(ctx, address, begin, cell.RelayBegin)
+}
+
+func (c *Circuit) dialStream(ctx context.Context, address string, begin []byte, command cell.RelayCommand) (net.Conn, error) {
+	var err error
 	if err = ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -70,7 +75,7 @@ func (c *Circuit) DialContext(ctx context.Context, network, address string) (net
 	}
 	m := c.streams
 	c.mu.Unlock()
-	return m.dial(ctx, address, begin)
+	return m.dial(ctx, address, begin, command)
 }
 
 func (c *Circuit) begin(network, address string) ([]byte, error) {
@@ -89,6 +94,15 @@ func (c *Circuit) begin(network, address string) ([]byte, error) {
 		return nil, errors.New("stream port must match circuit selection")
 	}
 	host = strings.ToLower(host)
+	if c.endHop.Load() == 3 {
+		c.mu.Lock()
+		ok := c.hs != nil && c.hs.stage == 3 && strings.TrimSuffix(host, ".") == c.hs.host
+		c.mu.Unlock()
+		if !ok {
+			return nil, errors.New("stream does not match authenticated onion service")
+		}
+		return append([]byte(":"+strconv.FormatUint(p, 10)), 0), nil
+	}
 	if ip, e := netip.ParseAddr(host); e == nil {
 		ip = ip.Unmap()
 		if ip.Zone() != "" || ip.Is6() != c.ipv6 {
@@ -160,7 +174,7 @@ func (m *streamMux) run() {
 				return
 			case msg := <-m.controls:
 				ctx, cancel := context.WithTimeout(m.c.ctx, 30*time.Second)
-				_, err := m.c.send(ctx, 2, msg, func(_ *cell.RelayMessage) error {
+				_, err := m.c.send(ctx, int(m.c.endHop.Load()), msg, func(_ *cell.RelayMessage) error {
 					if msg.Command != cell.RelaySendme || msg.StreamID == 0 {
 						return nil
 					}
@@ -209,7 +223,7 @@ func (m *streamMux) run() {
 	}
 }
 
-func (m *streamMux) dial(ctx context.Context, address string, begin []byte) (net.Conn, error) {
+func (m *streamMux) dial(ctx context.Context, address string, begin []byte, command cell.RelayCommand) (net.Conn, error) {
 	m.mu.Lock()
 	if m.held >= maxStreams || m.exhausted {
 		m.mu.Unlock()
@@ -226,7 +240,7 @@ func (m *streamMux) dial(ctx context.Context, address string, begin []byte) (net
 	m.held++
 	m.mu.Unlock()
 	// Mark BEGIN before transmission, so a prompt reply cannot race publication.
-	_, err := m.c.send(ctx, 2, cell.RelayMessage{Command: cell.RelayBegin, StreamID: id, Data: begin}, func(_ *cell.RelayMessage) error {
+	_, err := m.c.send(ctx, int(m.c.endHop.Load()), cell.RelayMessage{Command: command, StreamID: id, Data: begin}, func(_ *cell.RelayMessage) error {
 		m.mu.Lock()
 		defer m.mu.Unlock()
 		s.begun = true
@@ -270,7 +284,7 @@ func (m *streamMux) handle(msg Message) error {
 	fail := func() error { return fmt.Errorf("%w: invalid stream state or SENDME", ErrProtocol) }
 	if msg.Command == cell.RelaySendme && msg.StreamID == 0 {
 		b := msg.Data
-		if msg.Hop != 2 || len(b) < 23 || b[0] != 1 {
+		if msg.Hop != int(m.c.endHop.Load()) || len(b) < 23 || b[0] != 1 {
 			return fail()
 		}
 		n := int(binary.BigEndian.Uint16(b[1:3]))
@@ -507,7 +521,7 @@ acquired:
 			continue
 		}
 		n := min(len(p)-written, cell.RelayDataSize)
-		_, err = m.c.send(ctx, 2, cell.RelayMessage{Command: cell.RelayData, StreamID: s.id, Data: p[written : written+n]}, func(msg *cell.RelayMessage) error {
+		_, err = m.c.send(ctx, int(m.c.endHop.Load()), cell.RelayMessage{Command: cell.RelayData, StreamID: s.id, Data: p[written : written+n]}, func(msg *cell.RelayMessage) error {
 			m.mu.Lock()
 			defer m.mu.Unlock()
 			if err := s.writeError(); err != nil {

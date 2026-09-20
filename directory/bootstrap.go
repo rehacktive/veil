@@ -137,7 +137,8 @@ func bootstrap(ctx context.Context, source Source, roots []Fingerprint, now time
 }
 
 // Cache serializes operations within this instance. Use one owner per cache
-// directory; cross-process locking is not implemented. Manager handles refresh.
+// directory; hold a StateLock before constructing a Cache or GuardStore.
+// The constructors do not acquire locks separately. Manager handles refresh.
 // Cached bytes never replace authority verification or validity checks.
 type Cache struct {
 	path  string

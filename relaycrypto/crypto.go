@@ -1,5 +1,5 @@
-// Package relaycrypto implements the original Tor relay cipher: AES-128-CTR
-// with a running SHA-1 digest. These legacy primitives are mandated by Tor's
+// Package relaycrypto implements Tor's AES-128-CTR/SHA-1 relay cipher and the
+// AES-256-CTR/SHA3-256 onion service hop. These primitives are mandated by Tor's
 // wire protocol and are not intended for use as a general encryption scheme.
 package relaycrypto
 
@@ -7,6 +7,7 @@ import (
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/sha1" // #nosec G505 -- Tor's original relay wire format requires SHA-1 running digests; not a general-purpose cryptographic choice.
+	"crypto/sha3"
 	"crypto/subtle"
 	"encoding"
 	"encoding/binary"
@@ -24,7 +25,8 @@ var (
 	ErrClosed       = errors.New("relay crypto is closed or uninitialized")
 )
 
-// Tag is the full running digest, retained for authenticated SENDME handling.
+// Tag is the first 20 running-digest bytes required by Tor1 SENDME, including
+// for the SHA3-256 onion service hop.
 type Tag [20]byte
 
 type layer struct {
@@ -54,7 +56,7 @@ func (l *layer) originate(b *cell.RelayBody) Tag {
 	return tag
 }
 
-// cloneDigest uses the documented SHA-1 binary state interfaces. A failed
+// cloneDigest uses the SHA-1/SHA3 binary state interfaces. A failed
 // recognition probe must leave the running digest completely unchanged.
 func cloneDigest(d hash.Hash) hash.Hash {
 	state, err := d.(encoding.BinaryMarshaler).MarshalBinary()
@@ -62,6 +64,9 @@ func cloneDigest(d hash.Hash) hash.Hash {
 		panic(err)
 	}
 	copy := sha1.New() // #nosec G401 -- Clone of the protocol-mandated running relay digest for non-destructive recognition probes.
+	if d.Size() == 32 {
+		copy = sha3.New256()
+	}
 	if err := copy.(encoding.BinaryUnmarshaler).UnmarshalBinary(state); err != nil {
 		panic(err)
 	}
@@ -122,6 +127,39 @@ func (c *Client) AddHop(k ntor.KeyMaterial) error {
 		return ErrClosed
 	}
 	c.appendHop(k)
+	return nil
+}
+
+// AddOnionHop adds the virtual service hop only after hs-ntor authenticates it.
+// Its AES-256/SHA3-256 state is independent of the three relay hops. Tor1 SENDME
+// tags retain the first 20 bytes of the running digest, including for HSv3.
+func (c *Client) AddOnionHop(k [128]byte) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.closed || len(c.forward) != 3 {
+		return ErrClosed
+	}
+	makeLayer := func(key, seed []byte) (*layer, error) {
+		block, err := aes.NewCipher(key)
+		if err != nil {
+			return nil, err
+		}
+		h := sha3.New256()
+		if _, err := h.Write(seed); err != nil {
+			return nil, err
+		}
+		return &layer{stream: cipher.NewCTR(block, make([]byte, aes.BlockSize)), digest: h}, nil // #nosec G407 -- Tor v3 service-hop CTR starts at zero with fresh hs-ntor keys; counters persist across cells.
+	}
+	f, err := makeLayer(k[64:96], k[:32])
+	if err != nil {
+		return err
+	}
+	b, err := makeLayer(k[96:128], k[32:64])
+	if err != nil {
+		return err
+	}
+	c.forward = append(c.forward, f)
+	c.backward = append(c.backward, b)
 	return nil
 }
 

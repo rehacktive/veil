@@ -40,7 +40,7 @@ func streamCircuit(t *testing.T, configure func(*streamPeer)) (*Circuit, *testNe
 		configure(peer)
 	}
 	n.stream = func(msg cell.RelayMessage, hop int) error {
-		if hop != 2 {
+		if hop != len(n.layers)-1 {
 			return errors.New("wrong stream hop")
 		}
 		switch msg.Command {
@@ -49,33 +49,33 @@ func streamCircuit(t *testing.T, configure func(*streamPeer)) (*Circuit, *testNe
 			if peer.stallBegin {
 				return nil
 			}
-			return n.emit(2, cell.RelayMessage{Command: cell.RelayConnected, StreamID: msg.StreamID})
+			return n.emit(hop, cell.RelayMessage{Command: cell.RelayConnected, StreamID: msg.StreamID})
 		case cell.RelayData:
 			peer.received++
 			peer.perStream[msg.StreamID]++
 			if !peer.stallACKs {
 				if peer.received%100 == 0 {
-					tag := n.layers[2].fd.Sum(nil)
-					data := append([]byte{1, 0, 20}, tag...)
+					tag := n.layers[hop].fd.Sum(nil)
+					data := append([]byte{1, 0, 20}, tag[:20]...)
 					if peer.badACK {
 						data[3] ^= 1
 					}
-					if err := n.emit(2, cell.RelayMessage{Command: cell.RelaySendme, Data: data}); err != nil {
+					if err := n.emit(hop, cell.RelayMessage{Command: cell.RelaySendme, Data: data}); err != nil {
 						return err
 					}
 				}
 				if peer.perStream[msg.StreamID]%50 == 0 {
-					if err := n.emit(2, cell.RelayMessage{Command: cell.RelaySendme, StreamID: msg.StreamID}); err != nil {
+					if err := n.emit(hop, cell.RelayMessage{Command: cell.RelaySendme, StreamID: msg.StreamID}); err != nil {
 						return err
 					}
 				}
 			}
-			if err := n.emit(2, cell.RelayMessage{Command: cell.RelayData, StreamID: msg.StreamID, Data: msg.Data}); err != nil {
+			if err := n.emit(hop, cell.RelayMessage{Command: cell.RelayData, StreamID: msg.StreamID, Data: msg.Data}); err != nil {
 				return err
 			}
 			peer.echoed++
 			if peer.echoed%100 == 0 {
-				peer.expected = append(peer.expected, bytes.Clone(n.layers[2].bd.Sum(nil)))
+				peer.expected = append(peer.expected, bytes.Clone(n.layers[hop].bd.Sum(nil)[:20]))
 			}
 		case cell.RelaySendme:
 			if msg.StreamID == 0 {

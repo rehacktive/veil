@@ -41,7 +41,7 @@ includes its rationale. No numeric/indexing rules are suppressed.
 | Rules | Locations | Rationale |
 | --- | --- | --- |
 | G401 / G505 (13 annotations) | `directory/authority.go`, `directory/consensus.go`, `directory/fast.go`, `torcert/cert.go`, `relaycrypto/crypto.go` | Tor's legacy RSA fingerprints, authority certificate signatures, and original relay running digests use SHA-1. The directory verifier also retains verification-only support for legacy consensus signatures. The directory-only CREATE_FAST bootstrap also requires the SHA-1 KDF-TOR, inside a TLS channel authenticated against both pinned relay identities. Application circuits continue to use ntor. Replacing these with a different hash would change the authenticated wire data. SHA-256 remains in ntor, microdescriptor digests, cache consensus identity, and TLS certificate binding. |
-| G407 (1 annotation) | `relaycrypto/crypto.go` | Tor's original AES-CTR cipher starts each direction at zero with a fresh per-hop key derived by ntor. Cipher counters persist across cells; callers must never reuse hop key material. Randomizing the initial counter would break the wire protocol. |
+| G407 (3 annotations) | `relaycrypto/crypto.go`, `onion/ntor.go` | Tor's original AES-CTR cipher starts each direction at zero with a fresh per-hop key derived by ntor. Cipher counters persist across cells; callers must never reuse hop key material. The v3 service hop likewise uses a zero counter with a fresh hs-ntor AES-256 key. INTRODUCE1 uses a zero counter with a fresh ephemeral-derived key; the handshake rejects a second encryption. Randomizing the initial counter would break the wire protocol. |
 | G402 (1 annotation) | `channel/handshake.go` | Tor authenticates the exact TLS leaf through CERTS and both configured relay identity pins before exposing a channel. Ordinary Web PKI verification does not implement that authentication scheme. TLS session resumption is disabled. |
 | G304 (1 annotation) | `cmd/veil/directory.go` | Local CLI flags intentionally select files to inspect or use as bootstrap configuration. These paths never originate in relay messages or downloaded directory documents, and reads are bounded. |
 
@@ -57,7 +57,7 @@ To audit the annotations themselves, rerun with suppression disabled:
 gosec -nosec ./...
 ```
 
-That audit intentionally exits nonzero and reports exactly the 16 reviewed
+That audit intentionally exits nonzero and reports exactly the 18 reviewed
 exceptions above. It must not reveal additional integer, indexing, or unchecked
 error findings. An exception for a current Tor format does not authorize use of
 these primitives in unrelated or future features.
@@ -65,7 +65,7 @@ these primitives in unrelated or future features.
 ## Verification
 
 - Normal gosec scan: passed, zero findings and zero loading errors.
-- Suppression-disabled audit: exactly 16 reviewed exceptions.
+- Suppression-disabled audit: exactly 18 reviewed exceptions.
 - `go vet ./...` and the complete `go test -race ./... -timeout=60s`: passed.
 - Production binary rebuilt successfully.
 - Regression tests cover state-file permissions, symlinks, size limits, filename
@@ -114,3 +114,39 @@ The 0.8 scan passed on 2026-09-20: **34 production files, zero findings, zero
 loading errors**. The suppression-disabled audit reported exactly those 16
 exceptions. Full race tests and vet passed; public HTTPS and cache restart
 results are recorded in [VALIDATION.md](VALIDATION.md).
+
+## Reliability milestone follow-up
+
+Veil 0.9 adds advisory OS locking for shared state and bounded retries only for
+known transient circuit-build failures. Verification failures, unknown errors,
+path-selection errors, state failures and application stream failures do not
+trigger retries. Joined errors are retryable only when every component is
+retryable, so a local cleanup/state failure cannot be hidden by a network error.
+The same persistent guard store is used for every attempt.
+
+The current gosec scan covers **37 production files**, with **zero findings,
+zero loading errors and the unchanged 16 protocol annotations**. No new
+suppressions or dependencies were introduced. Race tests, vet, crash-release and
+cross-process contention checks passed; see [VALIDATION.md](VALIDATION.md).
+
+## V3 onion milestone follow-up
+
+Veil 0.10 was checked on 2026-09-20 with gosec 2.29.0: **43 production files,
+zero findings and zero loading errors**. The suppression-disabled audit reports
+exactly **18** reviewed protocol exceptions: the prior 16 plus two G407
+annotations for the hs-ntor INTRODUCE1 cipher and AES-256 service-hop cipher.
+The audit has no integer, indexing, or unchecked-error findings.
+
+Address checksum/version and canonical curve encodings are checked before
+routing. Signed consensus values determine descriptor periods and HSDirs.
+Descriptors have bounded parsing, signatures and expiry checks, MAC verification
+before decryption, and signed introduction key bindings. hs-ntor keys are only
+installed after authenticating the service reply. Failed onion requests never
+fall back to exits or local DNS; application streams are not replayed.
+
+Public services only: client authorization, PoW solving and production privacy
+parity remain incomplete. Descriptor lifetime/revision is parsed but no
+persistent descriptor cache or cross-connection rollback history is maintained.
+A valid signed older descriptor can therefore still be used until its validity
+ends. The single additional dependency is Edwards25519 public-point/field math,
+pinned in go.mod/go.sum. This is not an independent cryptographic review.

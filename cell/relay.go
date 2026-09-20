@@ -12,21 +12,26 @@ const RelayDataSize = PayloadSize - 11
 type RelayCommand uint8
 
 const (
-	RelayBegin     RelayCommand = 1
-	RelayData      RelayCommand = 2
-	RelayEnd       RelayCommand = 3
-	RelayConnected RelayCommand = 4
-	RelaySendme    RelayCommand = 5
-	RelayExtend    RelayCommand = 6
-	RelayExtended  RelayCommand = 7
-	RelayTruncate  RelayCommand = 8
-	RelayTruncated RelayCommand = 9
-	RelayDrop      RelayCommand = 10
-	RelayResolve   RelayCommand = 11
-	RelayResolved  RelayCommand = 12
-	RelayBeginDir  RelayCommand = 13
-	RelayExtend2   RelayCommand = 14
-	RelayExtended2 RelayCommand = 15
+	RelayBegin                 RelayCommand = 1
+	RelayData                  RelayCommand = 2
+	RelayEnd                   RelayCommand = 3
+	RelayConnected             RelayCommand = 4
+	RelaySendme                RelayCommand = 5
+	RelayExtend                RelayCommand = 6
+	RelayExtended              RelayCommand = 7
+	RelayTruncate              RelayCommand = 8
+	RelayTruncated             RelayCommand = 9
+	RelayDrop                  RelayCommand = 10
+	RelayResolve               RelayCommand = 11
+	RelayResolved              RelayCommand = 12
+	RelayBeginDir              RelayCommand = 13
+	RelayExtend2               RelayCommand = 14
+	RelayExtended2             RelayCommand = 15
+	RelayEstablishRendezvous   RelayCommand = 33
+	RelayIntroduce1            RelayCommand = 34
+	RelayRendezvous2           RelayCommand = 37
+	RelayRendezvousEstablished RelayCommand = 39
+	RelayIntroduceAck          RelayCommand = 40
 )
 
 // RelayBody is one fixed-size body in Tor's original relay format (v0).

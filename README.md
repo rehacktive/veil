@@ -2,7 +2,7 @@
 
 Veil is a staged, native Go rewrite of [Arti](https://github.com/zydou/arti), the Rust Tor implementation. This is an independent, experimental project, not an official Tor Project release.
 
-**Current stage: experimental SOCKS5 client with local and public-network testing.** It authenticates relay channels, downloads and verifies directory documents over native one-hop directory circuits (pinned CREATE_FAST for public bootstrap, ntor afterward), refreshes private caches, and maintains sampled/confirmed/primary guards. It selects compatible guard/middle/exit paths and builds them with CREATE2, EXTEND2, and type-2 ntor. It multiplexes TCP streams through a cancellable Go `net.Conn` API with authenticated SENDME flow control and exit-side DNS. `veil proxy` exposes those streams through a loopback SOCKS5 CONNECT listener, with a fresh circuit for each connection. The Go implementation needs no Rust runtime, C Tor process, cgo, or external Go dependencies. An optional interoperability test launches C Tor separately as a test peer.
+**Current stage: experimental SOCKS5 client with public internet and v3 onion support.** It authenticates relay channels, downloads and verifies directory documents over native one-hop directory circuits (pinned CREATE_FAST for public bootstrap, ntor afterward), refreshes private caches, and maintains sampled/confirmed/primary guards. It selects compatible guard/middle/exit paths and builds them with CREATE2, EXTEND2, and type-2 ntor. It multiplexes TCP streams through a cancellable Go `net.Conn` API with authenticated SENDME flow control and exit-side DNS. `veil proxy` exposes those streams through a loopback SOCKS5 CONNECT listener, with a fresh circuit for each connection. V3 onion connections use authenticated descriptors, hs-ntor introductions/rendezvous, and an encrypted service hop. The Go implementation needs no Rust runtime, C Tor process, or cgo. It uses `filippo.io/edwards25519` for public-key blinding and coordinate conversion. An optional interoperability test launches C Tor separately as a test peer.
 
 ## Browse the public internet
 
@@ -28,7 +28,9 @@ Wait for the `socks5_ready` event. First startup downloads tens of megabytes and
 can take several minutes (10-minute startup deadline); progress goes to stderr.
 The private cache and persistent guards are reused on restart. Keep
 `state-public` between runs, use a separate state directory for private networks,
-and run only one Veil process per state directory. Ctrl-C stops the proxy.
+and run only one Veil process per state directory. An OS lock rejects another
+owner automatically. Ctrl-C stops the proxy and releases ownership; a crash also
+releases it. Ctrl-C does not discard the persistent cache or guard sample.
 
 In another terminal, test it with:
 
@@ -42,9 +44,11 @@ curl --fail --max-time 90 --noproxy '' \
 The first response should include `"IsTor":true`. `--socks5-hostname` sends the
 hostname to the exit for resolution; `--noproxy ''` prevents environment bypass
 rules from making this test connect directly. HTTPS certificate verification
-remains enabled. Public relay failures can make individual connections fail;
-there is currently no automatic circuit retry. Retry the request without
-clearing persistent guard state. If port 9050 is occupied, use
+remains enabled. Transient relay failures during circuit construction trigger up to three
+build attempts, with randomized backoff, within the connection deadline.
+An individual request can still fail; retry it without clearing persistent
+guard state. Authentication, protocol, directory and state failures stop
+immediately. Streams are never reopened automatically after contacting an exit. If port 9050 is occupied, use
 `-listen 127.0.0.1:19050` and change the client port too.
 
 For a browser test, use a separate Firefox test profile. In its
@@ -59,6 +63,37 @@ Public HTTPS through Veil has been tested; details are in [VALIDATION.md](VALIDA
 This remains an experimental interoperability client: padding, traffic fingerprint
 parity and independent privacy review are incomplete. A normal browser configured
 with this proxy does not provide Tor Browser's privacy protections.
+
+## Connect to v3 onion services
+
+Start the same `make public-proxy` command above. Once `socks5_ready` appears,
+connect to Tor Project's public onion site:
+
+```sh
+curl --fail --max-time 180 --noproxy '' \
+  --socks5-hostname 127.0.0.1:9050 \
+  http://2gzyxa5ihm7nsggfxnu52rck2vv4rvmdlkiu3zzui5du4xyclen53wid.onion/index.html
+```
+
+No additional config or C Tor process is needed. Pass onion names through SOCKS5
+using `--socks5-hostname` (or `socks5h://`), never local DNS. Veil validates the
+v3 address, selects HSDirs from the verified consensus, authenticates and decrypts
+the descriptor, then establishes an hs-ntor rendezvous and encrypted service
+stream. Onion requests never use exit DNS or fall back to a direct connection.
+The Go `client.Dialer` supports the same `host.onion:port` destinations.
+
+Each connection fetches a fresh descriptor and owns its service circuit. HSDir
+fetches use three hops and close before introduction; setup uses at most two
+simultaneous three-hop circuits per connection slot. Descriptors are bounded to
+50,000 bytes and stay in memory. The default onion setup budget is three minutes
+(`-onion-timeout`), with up to eight directory attempts and three introduction
+attempts for supported transient failures. Authentication failures stop setup.
+
+This supports public v3 services. Client authorization/restricted discovery,
+proof-of-work solving, onion subdomains, legacy v2 addresses, service hosting,
+and service-circuit/descriptor caching are not implemented. Introduction points
+must appear with matching identity and ntor keys in the current verified
+consensus. Services requiring the unsupported features may fail to connect.
 
 ## Try SOCKS5 locally
 
@@ -113,21 +148,26 @@ subnet separation and exit policies:
 The command restores or bootstraps a verified directory and keeps refreshing it.
 A `socks5_ready` JSON event reports the listening address once startup completes.
 Use `curl --socks5-hostname 127.0.0.1:9050 ...` or `socks5h://127.0.0.1:9050`
-so destination hostnames reach the exit without local DNS lookup. The JSON schema
+so destination hostnames reach Veil without local DNS lookup. Ordinary names
+resolve at the exit; v3 onion names use the service rendezvous protocol. The JSON schema
 for your controlled network’s bootstrap pins is below. Use `-public` instead
 of `-config` for the bundled public Tor network setup above.
 
 Defaults are 16 simultaneous connections (including pending handshakes), a
-10-second SOCKS handshake, a 1-minute connect/build timeout, 5 minutes idle, and a
-1-hour maximum connection/circuit lifetime. `veil proxy -h` lists the controls.
+10-second SOCKS handshake, a 1-minute ordinary connection deadline (3 minutes
+for onion setup, controlled by `-onion-timeout`), 5 minutes idle,
+and a 1-hour maximum connection/circuit lifetime. Circuit construction has up to
+three attempts of at most 20 seconds each, sharing the total connection budget
+with backoff and stream establishment. Use `-build-attempts 1` to disable retries,
+or adjust `-build-attempts` (1..5), `-build-timeout` and `-connect-timeout`. `veil proxy -h` lists the controls.
 Listeners must be numeric loopback addresses. Every connection gets its own
-circuit, including connections with equal SOCKS username/password tokens; guards
+application circuit, including connections with equal SOCKS username/password tokens; guards
 remain shared and persistent. Tokens are accepted as isolation-compatible client
 metadata, **not access-control credentials**. Other local processes can use the
 listener. No destinations, payloads, credentials, or selected paths are logged.
 
 CONNECT supports hostnames and numeric IPv4/IPv6 addresses. Hostnames currently
-use IPv4 exits. BIND, UDP, SOCKS4, GSSAPI, onion services, automatic retries,
+use IPv4 exits. BIND, UDP, SOCKS4, GSSAPI, automatic stream retries,
 circuit pooling, and TCP half-close are unsupported. Tor END closes both
 stream directions. There is no direct-connect fallback. A fatal directory
 verification/state error stops the proxy; expired snapshots reject new circuits.
@@ -177,6 +217,7 @@ The address must be a numeric `IP:port` (bracket IPv6). The RSA fingerprint is 4
 | `channel` | `tor-proto/channel`, client channel handshake | TLS 1.2/1.3; ordered client handshake; bounded cell queues; cancellation; random circuit IDs; teardown |
 | `directory` | `tor-netdoc`, initial `tor-dirmgr`/`tor-guardmgr`/path selection | Authority certificates, signed microdescriptor consensus, digest binding, native BEGIN_DIR fetches, private cache, refresh/retry manager, reusable channels, sampled/confirmed/primary guards, weighted path selection |
 | `circuit` | `tor-proto/circuit`, circuit construction | Verified three-hop selection, tracked guard attempts, CREATE2/EXTEND2, RELAY_EARLY budget, ordered relay messages, multiplexed `net.Conn` streams, SENDME/backpressure, deadlines/cancellation, bounded teardown |
+| `onion` | `tor-hscrypto`, `tor-netdoc/hsdesc` | V3 addresses, blinded keys, authenticated/decrypted descriptors, hs-ntor |
 | `client` | Client lifecycle | Verified snapshot/guard integration, a dedicated circuit per connection, bounded concurrent circuits, lifetime ownership and SOCKS failure mapping |
 | `socks5` | SOCKS frontend | Loopback CONNECT, IPv4/IPv6/hostnames, token negotiation, bounded connections, timeouts, bidirectional relay and cleanup |
 | `cmd/veil` | Client and development tooling | `proxy`, version/help, offline frame inspection, pinned channel check, directory-check, directory-bootstrap, directory-watch, and circuit-check |
@@ -221,7 +262,7 @@ Verify the recorded Arti test network offline (these certificates are expired, s
 ```
 
 `bootstrap.json` is a user-supplied file; Veil does not ship one or create it
-automatically. There are no bundled mainnet authority or fallback relay lists yet.
+automatically. Public mode uses bundled authority and fallback pins instead.
 
 To try the live watcher locally, use existing C Tor and `tor-gencert` executables:
 
@@ -279,13 +320,23 @@ Keep the directory current until interrupted:
 
 Circuit builders use `GuardStore.Select`, report authenticated circuit success or failure through its `GuardAttempt`, check `Usability`, and call `Close` when done. Cancellation closes an attempt without recording a failure. Guard state write failures stop further selection until the store is reopened. `GuardStore.Guard` and `Snapshot.SelectPath(guardStore, port, ipv6, now)` remain offline previews, not circuit-attempt tracking. Path selection enforces flags/protocols, mutual fingerprint families/shared family IDs, IPv4 /16 or IPv6 /32 separation, and exit-port summaries. It does not guarantee an exit permits a particular destination address.
 
-Use one cache/guard-store owner per directory: there is no cross-process lock. State directories must have mode 0700 and files 0600. Only the default unrestricted guard context is implemented; bridges and custom entry/reachability filters require later work. Three-hop construction now uses tracked guard attempts; application path-bias accounting remains unimplemented. Count-valued guard parameters are capped at 1,024 to bound state. Sampling uses the current guard specification's count-based threshold; it does not reproduce Arti's bandwidth-fraction variant.
+All stateful CLI commands (`proxy`, `directory-bootstrap`, `directory-watch`,
+and `circuit-check`) acquire a nonblocking exclusive lock before opening state.
+Go embedders must call `directory.LockState(path)` before constructing their
+shared cache/guard owner and close the lock only after all users have stopped;
+the individual constructors do not lock independently. Locking uses the directory
+inode, so aliases contend and there is no stale PID file to remove. Never delete
+or replace a state directory while a process uses it. Supported locking targets
+are macOS, Linux, FreeBSD, OpenBSD, NetBSD and DragonFly BSD; unsupported systems
+or filesystems fail closed. Use a local filesystem. macOS is runtime-tested;
+other targets are compile-checked. State directories must have mode 0700 and files 0600. Only the default unrestricted guard context is implemented; bridges and custom entry/reachability filters require later work. Three-hop construction now uses tracked guard attempts; application path-bias accounting remains unimplemented. Count-valued guard parameters are capped at 1,024 to bound state. Sampling uses the current guard specification's count-based threshold; it does not reproduce Arti's bandwidth-fraction variant.
 
-Only the microdescriptor directory route is implemented. Full router-descriptor parsing, compressed downloads, consensus diffs, partial-directory sufficiency, and bundled mainnet trust/fallback lists remain future work. Link padding, traffic fingerprints, and complete production privacy behavior are not implemented or validated. Veil remains a controlled-network development implementation.
+Only the microdescriptor directory route is implemented. Full router-descriptor parsing, compressed downloads, consensus diffs, and partial-directory sufficiency remain future work. Public bootstrap uses bundled authority/fallback pins. Link padding, traffic fingerprints, and complete production privacy behavior are not implemented or validated. Veil remains an experimental development implementation.
 
 ## Three-hop circuit API
 
 ```go
+// Hold directory.LockState(statePath) while manager, guards and circuits run.
 // manager and guards share the same in-process state owner.
 snapshot, err := manager.Snapshot()
 if err != nil {
@@ -309,7 +360,11 @@ verifies. A successful full circuit confirms the guard; construction waits for
 guard usability and rechecks directory validity before returning. Parent
 cancellation does not penalize guards; extension failures do not mark an
 already authenticated guard unreachable. This milestone makes one build attempt,
-without automatic retries or path-bias accounting.
+without automatic retries or path-bias accounting. The higher-level `client.Dialer`
+adds bounded retries for transient build errors using the same persistent guard
+store. It refreshes the snapshot between attempts, keeps one concurrency slot
+for the entire request and tears down failed attempts before retrying. It never
+replays stream opens or application bytes.
 
 `ctx` owns the circuit lifetime; the separate build timeout stops applying after
 construction. Each circuit owns a dedicated authenticated channel. `Send` and
@@ -342,7 +397,7 @@ For a controlled network with compatible exits and separated relay subnets,
 
 Set `AUTHORITY_FINGERPRINTS` to the full comma-separated trust set used for your
 directory bootstrap. Stop other processes using that state directory first;
-there is no cross-process state lock. The localhost `--demo` network has no exits
+it now acquires the same exclusive state lock as the proxy. The localhost `--demo` network has no exits
 and shares a subnet, so it deliberately cannot pass this production path selector.
 To validate construction locally, use the separate test-only interoperability
 check below; there is no production flag to bypass path restrictions.
@@ -367,7 +422,9 @@ The port and IP family must match the circuit's selection options; build another
 circuit for other ports/families. `tcp` uses that selected family. Hostnames are
 sent in BEGIN for the exit to resolve; there is no local destination lookup or
 direct-connect fallback. ASCII DNS labels (including externally encoded IDNA)
-and numeric IPs are accepted; onion services and scoped IPv6 addresses are not.
+and numeric IPs are accepted; scoped IPv6 addresses are not. Ordinary exit
+circuits reject `.onion` names. Use `client.New(...).DialContext` for onion
+services; it builds and authenticates the service circuit before opening a stream.
 IPv6 is covered by wire-format tests, but the live test currently uses IPv4.
 
 Dial cancellation applies only until CONNECTED. Established streams support
@@ -485,7 +542,7 @@ circuit-close propagation. All network fixtures bind only to localhost and are
 removed on exit. This test uses explicit test-only hop pins; production path
 selection still enforces subnet separation and verified exit summaries.
 
-Remaining work includes pooling/retries, cross-process state ownership, padding and independent privacy/security review; see [ROADMAP.md](ROADMAP.md). Public HTTPS interoperability has been tested. TLS traffic fingerprint parity and end-to-end anonymity properties remain **unvalidated**. Recorded results and limits are in [VALIDATION.md](VALIDATION.md).
+Remaining work includes circuit pooling/rotation, stream retry policy, padding and independent privacy/security review; see [ROADMAP.md](ROADMAP.md). Public HTTPS interoperability has been tested. TLS traffic fingerprint parity and end-to-end anonymity properties remain **unvalidated**. Recorded results and limits are in [VALIDATION.md](VALIDATION.md).
 
 ## License
 

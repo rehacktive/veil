@@ -17,6 +17,7 @@ import (
 	"testing"
 	"time"
 
+	"veil/cell"
 	"veil/channel"
 	"veil/directory"
 )
@@ -145,5 +146,61 @@ func TestPublicBuildInvalidInputs(t *testing.T) {
 	}
 	if _, err := Build(context.Background(), nil, nil, Options{Port: 443}); err == nil {
 		t.Fatal("accepted missing guard store")
+	}
+}
+
+func TestLaterHopFailureKeepsGuardForNextBuild(t *testing.T) {
+	first := network(t)
+	snapshot := verifiedNetwork(t, first)
+	state := t.TempDir()
+	if err := os.Chmod(state, 0700); err != nil {
+		t.Fatal(err)
+	}
+	guards, err := directory.NewGuardStore(state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first.extension = func(_ int, m *Message) {
+		m.Command = cell.RelayTruncated
+		m.Data = []byte{6} // Next relay could not be reached.
+	}
+	_, err = buildSelected(context.Background(), snapshot, guards, Options{Port: 443}, first.dial)
+	var remote *RemoteError
+	if !errors.As(err, &remote) || remote.Reason != 6 {
+		t.Fatal(err)
+	}
+	if first.Err() == nil {
+		t.Fatal("failed channel was not closed")
+	}
+	before, err := os.ReadFile(state + "/guard.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	second := network(t)
+	second.hops, second.secrets = first.hops, first.secrets
+	c, err := buildSelected(context.Background(), snapshot, guards, Options{Port: 443}, second.dial)
+	if err != nil {
+		t.Fatal("later-hop failure made the guard unreachable", err)
+	}
+	defer c.Close()
+	if c.Path().Guard.Target() != first.hops[0].target {
+		t.Fatal("rotated away from reachable guard")
+	}
+	after, err := os.ReadFile(state + "/guard.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	type record struct {
+		Sample []struct{ RSA directory.Fingerprint }
+	}
+	var a, b record
+	if err := json.Unmarshal(before, &a); err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(after, &b); err != nil {
+		t.Fatal(err)
+	}
+	if len(a.Sample) != 1 || len(b.Sample) != 1 || a.Sample[0].RSA != b.Sample[0].RSA {
+		t.Fatal("discarded persistent guard sample")
 	}
 }

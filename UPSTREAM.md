@@ -4,7 +4,7 @@ Source: https://github.com/zydou/arti (a mirror of the Tor Project's Arti).
 
 Pinned commit: `abdbd50b85bed4bddd8afcb32cbf3db2cb794a43`
 
-Inspected on 2026-09-19. The source checkout was used as a reference, not included as a build dependency. Building and testing this repository requires no network access or upstream checkout.
+Inspected on 2026-09-19. The source checkout was used as a reference, not included as a build dependency. Once the pinned Go module dependency has been downloaded, building and testing requires no network access or upstream checkout.
 
 The Go implementation adapts the wire formats and protocol logic in these files at the pinned commit:
 
@@ -48,7 +48,7 @@ Deliberate boundaries and compatibility choices:
 - RSA identity certificates are checked for self-signature, 1024-bit key size, exponent 65537, and validity in addition to the RSA-to-Ed25519 cross-certificate. This is stricter than the pinned Arti code's identity-key extraction and follows the current specification's RSA identity checks.
 - Ordinary TLS CA/hostname verification is intentionally not used. The exact TLS leaf DER digest is authenticated by the pinned Tor chain before a channel is returned. TLS resumption is disabled. TLS traffic fingerprint parity is not implemented.
 - Circuit IDs are random with the initiator's high bit set. Used IDs are retained until channel close, with a 65,536-allocation cap to bound memory.
-- Original relay format and type-2 ntor only. No ntor-v3, CGO, or onion-service cryptography.
+- Original relay format, type-2 ntor for relays and hs-ntor for v3 onion services. No ntor-v3 or CGO.
 - No server-side ntor API. Relay behavior used in tests is only a local simulation.
 - Parsers reject incomplete structures and cap allocations to their wire-format bounds. Handshake completion requires exactly 64 reply bytes after removing cell padding.
 - Invalid incoming relay authentication permanently invalidates the client cipher state.
@@ -120,3 +120,37 @@ key confirmation and the first 92 derived key bytes used by Veil; production
 handshakes always generate fresh random client input. The public authority and
 fallback data comes from official Tor Project Arti sources, separately recorded
 with source hashes and retrieval date in [directory/data/README.md](directory/data/README.md).
+
+## V3 onion client additions (0.10)
+
+At the same pinned Arti commit, this implementation references:
+
+- `crates/tor-hscrypto/src/{pk,ops}.rs` for blinding, subcredentials and hs MACs.
+- `crates/tor-netdir/src/hsdir_{params,ring}.rs` for descriptor periods and HSDir selection.
+- `crates/tor-netdoc/src/doc/hsdesc/{outer,inner,desc_enc}.rs` for descriptor authentication and encryption.
+- `crates/tor-proto/src/crypto/handshake/hs_ntor.rs` for introductions and rendezvous keys.
+- `crates/tor-cell/src/relaycell/hs.rs` and `hs/intro_payload.rs` for control messages.
+- `crates/tor-proto/src/crypto/cell/tor1.rs` for the AES-256/SHA3 service hop and 20-byte SENDME tags.
+
+`onion/testdata/hsdesc1.txt` is copied byte-for-byte from
+`crates/tor-netdoc/testdata/hsdesc1.txt`; its public signing/blinded key and
+subcredential are recorded in upstream descriptor tests. It is checked at the
+historical fixture time, 2023-01-23 15:00 UTC. `onion/testdata/ntor.json` transcribes
+the C Tor-generated hs-ntor vector in the upstream handshake test, including its
+fixed test-only client ephemeral secret, INTRODUCE1 ciphertext and service reply.
+The blinding test uses the C Tor vector in `tor-hscrypto/src/pk.rs`.
+Production always generates fresh ephemeral secrets.
+
+The native implementation also accepts relay-bounded RENDEZVOUS2 padding after
+the authenticated 64-byte reply, matching C Tor/Arti parsing. The live public
+relay sent 148 bytes. No additional bytes are included in hs-ntor authentication.
+
+Protocol reference: [v3 onion services](https://spec.torproject.org/rend-spec/index.html).
+The public smoke-test address was obtained from the `Onion-Location` header of
+[torproject.org](https://www.torproject.org/) on 2026-09-20.
+
+The sole external Go module is `filippo.io/edwards25519` v1.2.0 (BSD-3-Clause),
+used for public-point multiplication during blinding and field coordinate
+conversion. Its source and license are in the Go module cache; exact module
+checksums are pinned in `go.sum`. Private ECDH, AES, hashes and signature
+verification use Go's standard library.

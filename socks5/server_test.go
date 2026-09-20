@@ -17,6 +17,24 @@ func destination(host string, port uint16) []byte {
 	b := append([]byte{5, 1, 0, 3, byte(len(host))}, []byte(host)...)
 	return binary.BigEndian.AppendUint16(b, port)
 }
+
+func TestOnionConnectAndBudget(t *testing.T) {
+	const host = "2gzyxa5ihm7nsggfxnu52rck2vv4rvmdlkiu3zzui5du4xyclen53wid.onion"
+	called := make(chan string, 1)
+	local, _, _ := startHandler(t, func(ctx context.Context, network, address string) (net.Conn, error) {
+		deadline, _ := ctx.Deadline()
+		if time.Until(deadline) < 30*time.Second {
+			t.Error("ordinary timeout used for onion")
+		}
+		called <- address
+		return nil, &ReplyError{Code: 4, Err: errors.New("test service unavailable")}
+	}, Options{ConnectTimeout: time.Second, OnionTimeout: time.Minute})
+	exchange(t, local, []byte{5, 1, 0}, []byte{5, 0})
+	exchange(t, local, destination(host, 80), []byte{5, 4, 0, 1, 0, 0, 0, 0, 0, 0})
+	if got := <-called; got != host+":80" {
+		t.Fatal(got)
+	}
+}
 func exchange(t *testing.T, c net.Conn, send, want []byte) {
 	t.Helper()
 	if _, err := c.Write(send); err != nil {

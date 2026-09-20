@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"veil/cell"
@@ -60,11 +61,15 @@ type Circuit struct {
 	port     uint16
 	ipv6     bool
 	window   int
+	endHop   atomic.Int32
+	hs       *onionCircuit // Access under mu; purpose and endpoint are immutable after construction.
 }
 
 func newCircuit(ch transport) *Circuit {
 	ctx, cancel := context.WithCancel(context.Background())
-	return &Circuit{ch: ch, early: 8, window: 1000, sendGate: make(chan struct{}, 1), incoming: make(chan Message, 32), ctx: ctx, cancel: cancel, done: make(chan struct{})}
+	c := &Circuit{ch: ch, early: 8, window: 1000, sendGate: make(chan struct{}, 1), incoming: make(chan Message, 32), ctx: ctx, cancel: cancel, done: make(chan struct{})}
+	c.endHop.Store(2)
+	return c
 }
 
 func (c *Circuit) Path() directory.Path  { return c.path }
@@ -77,6 +82,9 @@ func (c *Circuit) start(lifetime context.Context) {
 		defer c.wg.Done()
 		for {
 			m, err := c.receiveRelay(c.ctx)
+			if err == nil && (m.Command == cell.RelayRendezvous2 || m.Command == cell.RelayRendezvousEstablished || m.Command == cell.RelayIntroduceAck) {
+				err = c.acceptOnionControl(m)
+			}
 			if err == nil && m.Command == cell.RelayExtended2 {
 				err = fmt.Errorf("%w: unsolicited EXTENDED2", ErrProtocol)
 			}
@@ -131,7 +139,7 @@ func (c *Circuit) send(ctx context.Context, hop int, m cell.RelayMessage, prepar
 	if err := ctx.Err(); err != nil {
 		return tag, err
 	}
-	if hop < 0 || hop > 2 || len(m.Data) > cell.RelayDataSize {
+	if hop < 0 || hop > int(c.endHop.Load()) || len(m.Data) > cell.RelayDataSize {
 		return tag, fmt.Errorf("%w: invalid target or payload size", ErrProtocol)
 	}
 	switch m.Command {
@@ -140,12 +148,16 @@ func (c *Circuit) send(ctx context.Context, hop int, m cell.RelayMessage, prepar
 			return tag, fmt.Errorf("%w: DROP requires stream zero", ErrProtocol)
 		}
 	case cell.RelaySendme:
-		if m.StreamID != 0 && hop != 2 {
+		if m.StreamID != 0 && hop != int(c.endHop.Load()) {
 			return tag, fmt.Errorf("%w: stream message must target exit", ErrProtocol)
 		}
 	case cell.RelayBegin, cell.RelayBeginDir, cell.RelayData, cell.RelayEnd, cell.RelayResolve:
-		if hop != 2 || m.StreamID == 0 {
+		if hop != int(c.endHop.Load()) || m.StreamID == 0 {
 			return tag, fmt.Errorf("%w: stream message must target exit with nonzero ID", ErrProtocol)
+		}
+	case cell.RelayEstablishRendezvous, cell.RelayIntroduce1:
+		if err := c.checkOnionSend(hop, m); err != nil {
+			return tag, err
 		}
 	default:
 		return tag, fmt.Errorf("%w: unsupported outgoing relay command", ErrProtocol)
@@ -294,15 +306,19 @@ func (c *Circuit) receiveRelay(ctx context.Context) (Message, error) {
 				continue
 			}
 		case cell.RelayConnected, cell.RelayData, cell.RelayEnd, cell.RelayResolved:
-			if hop != 2 || m.StreamID == 0 {
+			if hop != int(c.endHop.Load()) || m.StreamID == 0 {
 				return Message{}, fmt.Errorf("%w: stream reply from wrong hop or stream zero", ErrProtocol)
 			}
 		case cell.RelaySendme:
-			if m.StreamID != 0 && hop != 2 {
+			if m.StreamID != 0 && hop != int(c.endHop.Load()) {
 				return Message{}, fmt.Errorf("%w: stream SENDME from wrong hop", ErrProtocol)
 			}
 		case cell.RelayBegin, cell.RelayBeginDir, cell.RelayExtend, cell.RelayExtended, cell.RelayExtend2, cell.RelayTruncate, cell.RelayResolve:
 			return Message{}, fmt.Errorf("%w: unexpected inbound relay command", ErrProtocol)
+		case cell.RelayRendezvous2, cell.RelayRendezvousEstablished, cell.RelayIntroduceAck:
+			if hop != 2 || m.StreamID != 0 {
+				return Message{}, ErrProtocol
+			}
 		default:
 			// Unknown commands are ignored after authentication, with a bound on
 			// consecutive ignored cells to prevent endless build-time floods.

@@ -14,7 +14,7 @@ import (
 )
 
 // GuardStore implements the default, unrestricted sampled/confirmed/primary
-// guard context. One owner per state directory is required. Do not copy it.
+// guard context. Hold a StateLock for the shared cache/guard owner. Do not copy it.
 // Circuit builders must use Select and report outcomes through GuardAttempt;
 // Guard and SelectPath only preview a primary guard for offline path planning.
 type GuardStore struct {

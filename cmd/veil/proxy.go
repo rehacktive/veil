@@ -15,7 +15,7 @@ import (
 	"veil/socks5"
 )
 
-func proxy(ctx context.Context, args []string, out, diagnostics io.Writer) error {
+func proxy(ctx context.Context, args []string, out, diagnostics io.Writer) (result error) {
 	f := flag.NewFlagSet("proxy", flag.ContinueOnError)
 	f.SetOutput(diagnostics)
 	public := f.Bool("public", false, "use bundled public Tor authority/fallback pins; no bootstrap JSON needed")
@@ -24,6 +24,9 @@ func proxy(ctx context.Context, args []string, out, diagnostics io.Writer) error
 	listen := f.String("listen", "127.0.0.1:9050", "numeric loopback SOCKS5 listener")
 	bootstrap := f.Duration("bootstrap-timeout", 2*time.Minute, "maximum wait for a live verified directory (public default: 10m)")
 	connect := f.Duration("connect-timeout", time.Minute, "per-connection circuit build and stream timeout")
+	onionTimeout := f.Duration("onion-timeout", 3*time.Minute, "total v3 onion descriptor/introduction/rendezvous setup timeout")
+	build := f.Duration("build-timeout", 20*time.Second, "maximum time for each circuit build attempt")
+	attempts := f.Int("build-attempts", 3, "maximum circuit build attempts per connection (1..5); streams are not retried")
 	idle := f.Duration("idle-timeout", 5*time.Minute, "close a connection after this long without traffic")
 	lifetime := f.Duration("max-lifetime", time.Hour, "maximum lifetime of each connection and circuit")
 	maxConnections := f.Int("max-connections", 16, "maximum concurrent connections, including handshakes (1..256)")
@@ -33,8 +36,8 @@ func proxy(ctx context.Context, args []string, out, diagnostics io.Writer) error
 		}
 		return err
 	}
-	if f.NArg() != 0 || (*public && *config != "" || !*public && *config == "") || *state == "" || *bootstrap <= 0 || *connect <= 0 || *idle <= 0 || *lifetime <= 0 || *maxConnections < 1 || *maxConnections > 256 {
-		return errors.New("proxy requires exactly one of -public or -config, -state, positive timeouts, and -max-connections in 1..256")
+	if f.NArg() != 0 || (*public && *config != "" || !*public && *config == "") || *state == "" || *bootstrap <= 0 || *connect <= 0 || *onionTimeout <= 0 || *build <= 0 || *attempts < 1 || *attempts > 5 || *idle <= 0 || *lifetime <= 0 || *maxConnections < 1 || *maxConnections > 256 {
+		return errors.New("proxy requires exactly one of -public or -config, -state, positive timeouts, -build-attempts in 1..5, and -max-connections in 1..256")
 	}
 	if *public {
 		explicit := false
@@ -56,6 +59,11 @@ func proxy(ctx context.Context, args []string, out, diagnostics io.Writer) error
 		return err
 	}
 	defer listener.Close()
+	lock, err := directory.LockState(*state)
+	if err != nil {
+		return err
+	}
+	defer func() { result = errors.Join(result, lock.Close()) }()
 	var manager *directory.Manager
 	var guards *directory.GuardStore
 	if *public {
@@ -76,11 +84,11 @@ func proxy(ctx context.Context, args []string, out, diagnostics io.Writer) error
 		go func() { defer close(progressDone); publicProgress(progressCtx, manager, diagnostics) }()
 		defer func() { stopProgress(); <-progressDone }()
 	}
-	dialer, err := client.New(ctx, manager, guards, client.Options{BuildTimeout: *connect, MaxCircuits: *maxConnections})
+	dialer, err := client.New(ctx, manager, guards, client.Options{BuildTimeout: *build, ConnectTimeout: *connect, OnionTimeout: *onionTimeout, BuildAttempts: *attempts, MaxCircuits: *maxConnections})
 	if err != nil {
 		return err
 	}
-	return serveProxy(ctx, listener, manager, dialer.DialContext, *bootstrap, socks5.Options{ConnectTimeout: *connect, IdleTimeout: *idle, MaxLifetime: *lifetime, MaxConnections: *maxConnections}, out)
+	return serveProxy(ctx, listener, manager, dialer.DialContext, *bootstrap, socks5.Options{ConnectTimeout: *connect, OnionTimeout: *onionTimeout, IdleTimeout: *idle, MaxLifetime: *lifetime, MaxConnections: *maxConnections}, out)
 }
 
 type proxyDirectory interface {

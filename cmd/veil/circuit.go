@@ -13,7 +13,7 @@ import (
 	"veil/directory"
 )
 
-func circuitCheck(ctx context.Context, args []string, out, diagnostics io.Writer) error {
+func circuitCheck(ctx context.Context, args []string, out, diagnostics io.Writer) (result error) {
 	f := flag.NewFlagSet("circuit-check", flag.ContinueOnError)
 	f.SetOutput(diagnostics)
 	state := f.String("state", "", "existing private directory cache and guard state (exclusive owner required)")
@@ -34,6 +34,11 @@ func circuitCheck(ctx context.Context, args []string, out, diagnostics io.Writer
 	if err != nil {
 		return err
 	}
+	lock, err := directory.LockState(*state)
+	if err != nil {
+		return err
+	}
+	defer func() { result = errors.Join(result, lock.Close()) }()
 	cache, err := directory.NewCache(*state, roots)
 	if err != nil {
 		return err

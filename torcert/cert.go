@@ -186,6 +186,25 @@ func (c edCertificate) verify(key [32]byte, now time.Time) error {
 	return nil
 }
 
+// VerifyOnionCertificate checks a v3 service's Ed25519 certificate against its
+// expected signer, purpose, explicit signing-key extension and expiration.
+func VerifyOnionCertificate(raw []byte, kind byte, signer [32]byte, now time.Time) (subject [32]byte, expires time.Time, err error) {
+	if kind != 8 && kind != 9 && kind != 11 {
+		return subject, expires, ErrCertificate
+	}
+	c, err := parseEd(raw, kind)
+	if err != nil {
+		return subject, expires, err
+	}
+	if c.keyType != 1 || c.signer == nil {
+		return subject, expires, ErrCertificate
+	}
+	if err := c.verify(signer, now); err != nil {
+		return subject, expires, err
+	}
+	return c.subject, c.expires, nil
+}
+
 func verifyCrosscert(b []byte, public *rsa.PublicKey, identity [32]byte, now time.Time) (time.Time, error) {
 	if len(b) < 37 || int(b[36]) != len(b)-37 || int(b[36]) != public.Size() || !bytes.Equal(b[:32], identity[:]) {
 		return time.Time{}, fmt.Errorf("%w: RSA cross-certificate size or subject", ErrCertificate)

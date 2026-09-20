@@ -14,6 +14,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"veil/onion"
 )
 
 type DialFunc func(context.Context, string, string) (net.Conn, error)
@@ -22,6 +24,7 @@ type Options struct {
 	MaxConnections   int           // Default 16, maximum 256; includes pending handshakes.
 	HandshakeTimeout time.Duration // Default 10 seconds.
 	ConnectTimeout   time.Duration // Default 1 minute, including circuit build.
+	OnionTimeout     time.Duration // Default 3 minutes for v3 onion connection setup.
 	IdleTimeout      time.Duration // Default 5 minutes, reset by traffic in either direction.
 	MaxLifetime      time.Duration // Default 1 hour; bounds each connection/circuit lifetime.
 }
@@ -36,13 +39,16 @@ func (o Options) defaults() (Options, error) {
 	if o.ConnectTimeout == 0 {
 		o.ConnectTimeout = time.Minute
 	}
+	if o.OnionTimeout == 0 {
+		o.OnionTimeout = 3 * time.Minute
+	}
 	if o.IdleTimeout == 0 {
 		o.IdleTimeout = 5 * time.Minute
 	}
 	if o.MaxLifetime == 0 {
 		o.MaxLifetime = time.Hour
 	}
-	if o.MaxConnections < 1 || o.MaxConnections > 256 || o.HandshakeTimeout < 0 || o.ConnectTimeout < 0 || o.IdleTimeout < 0 || o.MaxLifetime < 0 {
+	if o.MaxConnections < 1 || o.MaxConnections > 256 || o.HandshakeTimeout < 0 || o.ConnectTimeout < 0 || o.OnionTimeout < 0 || o.IdleTimeout < 0 || o.MaxLifetime < 0 {
 		return o, errors.New("invalid SOCKS resource limits")
 	}
 	return o, nil
@@ -127,8 +133,13 @@ func handle(parent context.Context, local net.Conn, dial DialFunc, o Options) {
 		return
 	}
 	// The connect timeout covers the native circuit build as well as BEGIN.
-	connect, cancelConnect := context.WithTimeout(ctx, o.ConnectTimeout)
-	if err = local.SetDeadline(time.Now().Add(o.ConnectTimeout)); err != nil {
+	budget := o.ConnectTimeout
+	host, _, _ := net.SplitHostPort(address)
+	if onion.IsAddress(host) {
+		budget = o.OnionTimeout
+	}
+	connect, cancelConnect := context.WithTimeout(ctx, budget)
+	if err = local.SetDeadline(time.Now().Add(budget)); err != nil {
 		cancelConnect()
 		return
 	}
@@ -285,7 +296,11 @@ func request(r io.Reader) (network, address string, code byte, err error) {
 }
 func validName(host string) bool {
 	host = strings.TrimSuffix(host, ".")
-	if len(host) == 0 || len(host) > 253 || host == "onion" || strings.HasSuffix(host, ".onion") {
+	if onion.IsAddress(host) {
+		_, err := onion.ParseAddress(host)
+		return err == nil
+	}
+	if len(host) == 0 || len(host) > 253 {
 		return false
 	}
 	for _, label := range strings.Split(host, ".") {

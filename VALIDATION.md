@@ -1,3 +1,100 @@
+# Veil 0.10 v3 onion client validation
+
+Run on 2026-09-20, macOS arm64, Go 1.27.1.
+
+- Full `go test -race -cover ./... -timeout=120s`: passed.
+- `go vet ./...`: passed; binary rebuilt as `0.10.0-dev`.
+- Gosec 2.29.0: **43 production files, zero findings, zero loading errors**.
+  Suppression-disabled audit: exactly 18 documented protocol exceptions.
+- Onion package coverage: 81.6%; overall client orchestration coverage is lower
+  (37.4%) because live public-network paths run outside the unit-test process.
+- Tor/Arti vectors verify v3 blinding/subcredential, descriptor authentication
+  and decryption, INTRODUCE1 ciphertext prefix, and hs-ntor reply/session keys.
+- An independent cipher peer completes **2.25 MiB** through the service hop,
+  exercising AES-256/SHA3 and both SENDME credit windows with 20-byte tags.
+  Tests verify destination binding, port-only BEGIN, padded rendezvous replies,
+  rejection of forged/unsolicited/wrong-hop replies, invalid descriptors and
+  duplicate introduction identity pins, resource cleanup and no exit fallback.
+- Directory tests cover noon/midnight SRV selection, disaster SRVs, expired
+  consensus rejection, HSDir eligibility, and internal path exclusions.
+- Five-second fuzz smoke runs: descriptor parser **2,416 executions**;
+  descriptor item/link parsers **161,039 executions**. Both passed.
+
+## Live public-network check
+
+The compiled Go CLI ran with `proxy -public -state ./state-public -listen
+127.0.0.1:19050`, preserving the existing private cache and persistent guards.
+After `socks5_ready`, curl used `--noproxy '' --socks5-hostname 127.0.0.1:19050`:
+
+- Tor Project's published v3 onion `/index.html`: **HTTP 200**, **23,597 body
+  bytes**, with page title `Tor Project | Anonymity Online`.
+- `https://check.torproject.org/api/ip`: **HTTPS 200**, `IsTor: true`, with normal
+  TLS certificate verification enabled.
+
+This exercised consensus HSDir selection, three-hop descriptor fetch, signature
+and two-layer decryption checks, encrypted introduction, authenticated rendezvous,
+service-hop streams and SOCKS relay. No C Tor/Arti process ran on the client.
+The library-level native onion probe separately received HTTP 200. The temporary
+SOCKS process was stopped after the checks; persistent state was retained.
+
+Tests do not establish client-authorization or PoW compatibility, sustained
+service availability, traffic fingerprint parity, or production anonymity.
+README.md documents supported services and the command to reproduce the test.
+
+---
+
+# Veil 0.9 reliability validation
+
+Run on 2026-09-20, macOS arm64, Go 1.27.1.
+
+- Full `go test -race -cover ./... -timeout=120s`: passed. Client coverage 84.1%.
+- `go vet ./...`: passed; binary rebuilt as `0.9.0-dev`.
+- Gosec 2.29.0: **37 production files, zero findings, zero loading errors**;
+  the same 16 reviewed protocol annotations, with no new suppressions.
+- Production binary cross-compiles for Linux, FreeBSD, OpenBSD, NetBSD,
+  DragonFly BSD and Windows (amd64). Directory locking is enabled on macOS and
+  those Unix targets; Windows and other unsupported targets fail closed for
+  stateful commands. Runtime lock tests were performed on macOS only.
+
+## State ownership
+
+Tests exercise competing opens, path aliases, independent directories, concurrent
+and repeated Close, unsafe paths, and acquisition after forcibly killing a
+separate owner process. All four stateful CLI commands reject an existing owner
+before opening state, and startup failures release the lock. The lock is held on
+the directory inode; no PID/lock file is created, removed or replaced.
+
+A real second `veil proxy -public` process on a different SOCKS port exited with
+`state directory is already in use by another Veil owner` while the first proxy
+remained usable. Library consumers must explicitly hold `directory.LockState`
+across their cache, guard store, managers and circuits. These are advisory locks
+for cooperating writers on local filesystems; callers must not replace or remove
+an active state directory.
+
+## Bounded build retries
+
+Deterministic tests inject transient transport failures and confirm recovery
+within the attempt count, randomized-backoff bounds, per-attempt context cleanup,
+retained concurrency slots, fresh snapshot lookup, total connection deadline,
+shutdown cancellation, and established connections surviving setup deadlines.
+They reject retries for protocol/authentication/directory/state failures, unknown
+errors and joined failures containing a terminal error. No BEGIN/stream-open
+failure is retried, and application bytes are never replayed by this mechanism.
+
+An authenticated relay fixture fails an EXTEND2 with CONNECTFAILED, then succeeds
+on a fresh build with the same persistent GuardStore. The reachable guard remains
+selected and the saved sample is retained. The client adds no exclusion list or
+reachability reset, and a path-selection failure terminates the retry loop.
+
+The rebuilt production proxy started with existing public state and completed
+HTTPS through `https://check.torproject.org/api/ip`, which returned
+**`"IsTor":true`**. Live public success validates compatibility; injected failures
+exercise retries deterministically without disrupting public relays. Circuit
+pooling, rotation, stream retry policy, padding and production privacy review
+remain outstanding.
+
+---
+
 # Veil 0.8 public-network validation
 
 Run on 2026-09-20, macOS arm64, Go 1.27.1.

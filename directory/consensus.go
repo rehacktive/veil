@@ -69,6 +69,7 @@ type consensus struct {
 	weights                            map[string]uint64
 	params                             map[string]int64
 	signatures                         int
+	sharedRandom                       [2][]string // Previous/current signed SRV fields, including optional timestamps.
 }
 
 func verifyConsensus(raw []byte, set *authoritySet, now time.Time) (*consensus, error) {
@@ -152,6 +153,8 @@ func verifyConsensus(raw []byte, set *authoritySet, now time.Time) (*consensus, 
 			c.params[key] = v
 		}
 	}
+	c.sharedRandom[0] = head["shared-rand-previous-value"].args
+	c.sharedRandom[1] = head["shared-rand-current-value"].args
 	seenAuthorities := map[Fingerprint]bool{}
 	for i < len(items) && items[i].key != "r" && items[i].key != "directory-footer" {
 		it := items[i]

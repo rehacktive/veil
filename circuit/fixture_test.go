@@ -11,6 +11,7 @@ import (
 	"crypto/rand"
 	"crypto/sha1"
 	"crypto/sha256"
+	"crypto/sha3"
 	"encoding"
 	"errors"
 	"fmt"
@@ -277,6 +278,9 @@ func (n *testNetwork) decrypt(raw []byte) (cell.RelayMessage, int, error) {
 		clear(body[5:9])
 		state, _ := l.fd.(encoding.BinaryMarshaler).MarshalBinary()
 		candidate := sha1.New()
+		if l.fd.Size() == 32 {
+			candidate = sha3.New256()
+		}
 		candidate.(encoding.BinaryUnmarshaler).UnmarshalBinary(state)
 		candidate.Write(body[:])
 		copy(body[5:9], received)
