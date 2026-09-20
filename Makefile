@@ -23,6 +23,7 @@ fuzz:
 	go test ./directory -run='^$$' -fuzz='^FuzzDirectoryDocuments$$' -fuzztime=10s
 	go test ./circuit -run='^$$' -fuzz='^FuzzStreamControl$$' -fuzztime=10s
 	go test ./socks5 -run='^$$' -fuzz='^FuzzRequest$$' -fuzztime=10s
+	go test ./socks5 -run='^$$' -fuzz='^FuzzNegotiate$$' -fuzztime=10s
 	go test ./onion -run='^$$' -fuzz='^FuzzDescriptor$$' -fuzztime=10s
 	go test ./onion -run='^$$' -fuzz='^FuzzDescriptorItemsAndLinks$$' -fuzztime=10s
 

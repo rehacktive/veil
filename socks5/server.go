@@ -15,6 +15,7 @@ import (
 	"sync"
 	"time"
 
+	"veil/isolation"
 	"veil/onion"
 )
 
@@ -124,9 +125,16 @@ func handle(parent context.Context, local net.Conn, dial DialFunc, o Options) {
 	if err := local.SetDeadline(time.Now().Add(o.HandshakeTimeout)); err != nil {
 		return
 	}
-	if err := negotiate(local); err != nil {
+	var err error
+	ctx, err = negotiate(ctx, local)
+	if err != nil {
 		return
 	}
+	applicationIP, _, splitErr := net.SplitHostPort(local.RemoteAddr().String())
+	if splitErr != nil {
+		applicationIP = local.RemoteAddr().String()
+	}
+	ctx = isolation.WithProxyBoundary(ctx, applicationIP, local.LocalAddr().String())
 	network, address, code, err := request(local)
 	if err != nil {
 		_ = reply(local, code)
@@ -177,17 +185,17 @@ func handle(parent context.Context, local net.Conn, dial DialFunc, o Options) {
 	bridge(ctx, local, remote, o.IdleTimeout)
 }
 
-func negotiate(c io.ReadWriter) error {
+func negotiate(ctx context.Context, c io.ReadWriter) (context.Context, error) {
 	var header [2]byte
 	if _, err := io.ReadFull(c, header[:]); err != nil {
-		return err
+		return ctx, err
 	}
 	if header[0] != 5 || header[1] == 0 {
-		return errors.New("invalid SOCKS greeting")
+		return ctx, errors.New("invalid SOCKS greeting")
 	}
 	methods := make([]byte, int(header[1]))
 	if _, err := io.ReadFull(c, methods); err != nil {
-		return err
+		return ctx, err
 	}
 	method := byte(255)
 	for _, m := range methods {
@@ -199,43 +207,41 @@ func negotiate(c io.ReadWriter) error {
 		}
 	}
 	if err := writeAll(c, []byte{5, method}); err != nil {
-		return err
+		return ctx, err
 	}
 	if method == 255 {
-		return errors.New("no supported SOCKS authentication method")
+		return ctx, errors.New("no supported SOCKS authentication method")
 	}
 	if method == 0 {
-		return nil
+		return isolation.WithToken(ctx, ""), nil
 	}
-	// Tokens are accepted for compatibility with isolating SOCKS clients. Each
-	// connection receives a new circuit regardless of their values. This is not
-	// access-control authentication; the listener is restricted to loopback.
+	// Credentials identify an explicit sharing scope, not access control.
 	if _, err := io.ReadFull(c, header[:]); err != nil {
-		return err
+		return ctx, err
 	}
 	if header[0] != 1 || header[1] == 0 {
 		_ = writeAll(c, []byte{1, 1})
-		return errors.New("invalid SOCKS tokens")
+		return ctx, errors.New("invalid SOCKS tokens")
 	}
-	token := make([]byte, int(header[1]))
-	if _, err := io.ReadFull(c, token); err != nil {
-		return err
+	user := make([]byte, int(header[1]))
+	defer clear(user)
+	if _, err := io.ReadFull(c, user); err != nil {
+		return ctx, err
 	}
-	clear(token)
 	var length [1]byte
 	if _, err := io.ReadFull(c, length[:]); err != nil {
-		return err
+		return ctx, err
 	}
 	if length[0] == 0 {
 		_ = writeAll(c, []byte{1, 1})
-		return errors.New("empty SOCKS token")
+		return ctx, errors.New("empty SOCKS token")
 	}
-	token = make([]byte, int(length[0]))
-	if _, err := io.ReadFull(c, token); err != nil {
-		return err
+	password := make([]byte, int(length[0]))
+	defer clear(password)
+	if _, err := io.ReadFull(c, password); err != nil {
+		return ctx, err
 	}
-	clear(token)
-	return writeAll(c, []byte{1, 0})
+	return isolation.WithSOCKS(ctx, user, password), writeAll(c, []byte{1, 0})
 }
 
 func request(r io.Reader) (network, address string, code byte, err error) {

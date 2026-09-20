@@ -154,3 +154,22 @@ used for public-point multiplication during blinding and field coordinate
 conversion. Its source and license are in the Go module cache; exact module
 checksums are pinned in `go.sum`. Private ECDH, AES, hashes and signature
 verification use Go's standard library.
+
+## Scoped circuit reuse and descriptor caching (0.11)
+
+Policy references checked on 2026-09-20:
+[stream isolation and circuit sharing](https://spec.torproject.org/path-spec/stream-isolation.html)
+and [circuit construction/retirement](https://spec.torproject.org/path-spec/when-we-build.html).
+Veil requires explicit tokens for sharing, hashes both SOCKS credential fields
+with length framing, and includes application IP and proxy listener boundaries.
+API and SOCKS tokens use separate namespaces. It additionally isolates every
+hostname/IP, port and family; this is stricter and may consume more circuits than
+Tor's recommended defaults. Veil also rotates strongly scoped circuits after a
+configurable age, although Tor permits such circuits to remain reusable longer.
+No claim of full Tor/Arti pool policy equivalence is made.
+
+Descriptor expiry and revision floors are kept only in memory and scoped to the
+blinded key and isolation group. Floors survive plaintext cache expiry until the
+period ends; live floors are not evicted under memory pressure. This cannot detect
+a rollback across process restarts or a descriptor that predates the first one
+seen within a scope. There are no new module dependencies or cryptographic formats.

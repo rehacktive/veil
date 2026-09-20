@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/binary"
 	"errors"
@@ -17,6 +18,7 @@ import (
 	"veil/cell"
 	"veil/circuit"
 	"veil/directory"
+	"veil/isolation"
 	"veil/onion"
 )
 
@@ -51,40 +53,60 @@ func (d *Dialer) buildOnion(life, setup context.Context, guards *directory.Guard
 	if err != nil {
 		return nil, err
 	}
-	dirs, err := snapshot.OnionDirectories(blinded, time.Now())
+	fetch := func(requestContext context.Context) (*onion.Descriptor, [32]byte, error) {
+		setup := requestContext
+		dirs, err := snapshot.OnionDirectories(blinded, time.Now())
+		if err != nil {
+			return nil, [32]byte{}, err
+		}
+		if err := shuffle(dirs); err != nil {
+			return nil, [32]byte{}, err
+		}
+		var last error
+		// Bound attempts even if a future consensus expands the directory spread.
+		for _, target := range dirs[:min(len(dirs), 8)] {
+			if err := setup.Err(); err != nil {
+				return nil, [32]byte{}, err
+			}
+			request, cancel := context.WithTimeout(setup, 30*time.Second)
+			raw, e := fetchOnionDescriptor(request, snapshot, guards, target, blinded, d.options.BuildTimeout)
+			cancel()
+			if e != nil {
+				last = e
+				if !errors.Is(e, errOnionDescriptorMissing) && !errors.Is(e, directory.ErrPath) && !retryableBuild(e) {
+					return nil, [32]byte{}, e
+				}
+				continue
+			}
+			descriptor, e := onion.ParseDescriptor(raw, blinded, sub, time.Now())
+			digest := sha256.Sum256(raw)
+			clear(raw)
+			if e != nil {
+				return nil, [32]byte{}, fmt.Errorf("onion descriptor verification: %w", e)
+			} // Authentication/decryption failure is terminal.
+			return descriptor, digest, nil
+		}
+		return nil, [32]byte{}, fmt.Errorf("onion descriptor unavailable: %w", last)
+	}
+	var descriptor *onion.Descriptor
+	if scope, shared := isolation.Scope(setup); shared {
+		// Period boundaries are anchored at the Unix epoch plus 12 voting intervals.
+		if minutes < 30 || minutes > 14400 {
+			return nil, directory.ErrTime
+		}
+		info := snapshot.Info()
+		length := time.Duration(minutes) * time.Minute
+		offset := 12 * info.FreshUntil.Sub(info.ValidAfter)
+		elapsed := time.Duration((info.ValidAfter.Unix()-int64(offset/time.Second))%int64(length/time.Second)) * time.Second
+		periodEnd := info.ValidAfter.Add(length - elapsed)
+		descriptor, err = d.descriptors.load(setup, descriptorKey{scope: scope, blinded: blinded}, periodEnd, fetch)
+	} else {
+		descriptor, _, err = fetch(setup)
+	}
 	if err != nil {
 		return nil, err
 	}
-	if err := shuffle(dirs); err != nil {
-		return nil, err
-	}
-	var descriptor *onion.Descriptor
 	var last error
-	// Bound attempts even if a future consensus expands the directory spread.
-	for _, target := range dirs[:min(len(dirs), 8)] {
-		if err := setup.Err(); err != nil {
-			return nil, err
-		}
-		request, cancel := context.WithTimeout(setup, 30*time.Second)
-		raw, e := fetchOnionDescriptor(request, snapshot, guards, target, blinded, d.options.BuildTimeout)
-		cancel()
-		if e != nil {
-			last = e
-			if !errors.Is(e, errOnionDescriptorMissing) && !errors.Is(e, directory.ErrPath) && !retryableBuild(e) {
-				return nil, e
-			}
-			continue
-		}
-		descriptor, e = onion.ParseDescriptor(raw, blinded, sub, time.Now())
-		clear(raw)
-		if e != nil {
-			return nil, fmt.Errorf("onion descriptor verification: %w", e)
-		} // Authentication/decryption failure is terminal.
-		break
-	}
-	if descriptor == nil {
-		return nil, fmt.Errorf("onion descriptor unavailable: %w", last)
-	}
 	if err := shuffle(descriptor.Introductions); err != nil {
 		return nil, err
 	}

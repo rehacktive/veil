@@ -117,3 +117,5 @@ func waitBuildRetry(ctx context.Context, base time.Duration) error {
 		return nil
 	}
 }
+
+func (c *attemptCircuit) Err() error { return circuitError(c.streamCircuit) }

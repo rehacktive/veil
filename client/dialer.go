@@ -1,17 +1,21 @@
 // Package client joins a verified directory/guard lifecycle to native Tor
-// streams. Each connection owns a fresh circuit; there is no direct fallback.
+// streams. Explicit isolation scopes permit circuit reuse; unscoped requests
+// get dedicated circuits. There is no direct fallback.
 package client
 
 import (
 	"context"
 	"errors"
 	"net"
+	"net/netip"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
 	"veil/circuit"
 	"veil/directory"
+	"veil/isolation"
 	"veil/onion"
 	"veil/socks5"
 )
@@ -26,26 +30,34 @@ type streamCircuit interface {
 type buildFunc func(context.Context, *directory.Snapshot, circuit.Options) (streamCircuit, error)
 
 type Options struct {
-	BuildTimeout   time.Duration // Per build attempt; default 20 seconds.
-	ConnectTimeout time.Duration // Total queue/build/backoff/stream budget; default 1 minute.
-	OnionTimeout   time.Duration // Total onion descriptor/introduction/rendezvous budget; default 3 minutes.
-	BuildAttempts  int           // Default 3, maximum 5. Stream opens are never retried.
-	MaxCircuits    int           // Connection slots including builds: default 16, max 256. Onion setup uses at most two circuits per slot.
+	MaxPooledCircuits  int           // Pool bound including active/building/idle entries; default 16, max 256.
+	CircuitMaxAge      time.Duration // Stop attaching streams after this age; default 10 minutes. Active streams drain.
+	CircuitIdleTimeout time.Duration // Close unused pooled circuits; default 2 minutes.
+	DisableReuse       bool          // Retain dedicated circuits even with explicit isolation tokens.
+	BuildTimeout       time.Duration // Per build attempt; default 20 seconds.
+	ConnectTimeout     time.Duration // Total queue/build/backoff/stream budget; default 1 minute.
+	OnionTimeout       time.Duration // Total onion descriptor/introduction/rendezvous budget; default 3 minutes.
+	BuildAttempts      int           // Default 3, maximum 5. Stream opens are never retried.
+	MaxCircuits        int           // Connection slots including builds: default 16, max 256. Onion setup uses at most two circuits per slot.
 }
 
 type Dialer struct {
-	lifetime   context.Context
-	source     snapshotSource
-	build      buildFunc
-	options    Options
-	slots      chan struct{}
-	wait       func(context.Context, time.Duration) error
-	onionBuild func(context.Context, context.Context, string, uint16) (streamCircuit, error)
+	cancel      context.CancelFunc
+	pool        *circuitPool
+	descriptors *descriptorCache
+	lifetime    context.Context
+	source      snapshotSource
+	build       buildFunc
+	options     Options
+	slots       chan struct{}
+	wait        func(context.Context, time.Duration) error
+	onionBuild  func(context.Context, context.Context, string, uint16) (streamCircuit, error)
 }
 
 // New uses the same manager and guard store that own the private state. ctx
 // owns every circuit's lifetime; canceling an individual DialContext after it
-// succeeds does not close its stream. Close each returned connection.
+// succeeds does not close its stream. Close each returned connection and call
+// Dialer.Close before releasing state. Use isolation.WithToken to opt into sharing.
 func New(ctx context.Context, manager *directory.Manager, guards *directory.GuardStore, options Options) (*Dialer, error) {
 	if manager == nil || guards == nil {
 		return nil, errors.New("directory manager and guard store are required")
@@ -77,12 +89,35 @@ func newDialer(ctx context.Context, source snapshotSource, options Options, buil
 	if options.MaxCircuits == 0 {
 		options.MaxCircuits = 16
 	}
+	if options.MaxPooledCircuits == 0 {
+		options.MaxPooledCircuits = 16
+	}
+	if options.CircuitMaxAge == 0 {
+		options.CircuitMaxAge = 10 * time.Minute
+	}
+	if options.CircuitIdleTimeout == 0 {
+		options.CircuitIdleTimeout = 2 * time.Minute
+	}
+	if options.MaxPooledCircuits < 1 || options.MaxPooledCircuits > 256 || options.CircuitMaxAge < 0 || options.CircuitIdleTimeout < 0 {
+		return nil, errors.New("invalid circuit pool limits")
+	}
+
 	if options.BuildTimeout < 0 || options.ConnectTimeout < 0 || options.OnionTimeout < 0 || options.BuildAttempts < 1 || options.BuildAttempts > 5 || options.MaxCircuits < 1 || options.MaxCircuits > 256 {
 		return nil, errors.New("invalid client resource limits")
 	}
-	return &Dialer{lifetime: ctx, source: source, build: build, options: options, slots: make(chan struct{}, options.MaxCircuits), wait: waitBuildRetry}, nil
+	life, cancel := context.WithCancel(ctx)
+	return &Dialer{lifetime: life, cancel: cancel, pool: newPool(), descriptors: newDescriptorCache(), source: source, build: build, options: options, slots: make(chan struct{}, options.MaxCircuits), wait: waitBuildRetry}, nil
 }
 func (d *Dialer) DialContext(ctx context.Context, network, address string) (net.Conn, error) {
+	d.pool.mu.Lock()
+	if d.pool.closed {
+		d.pool.mu.Unlock()
+		return nil, context.Canceled
+	}
+	d.pool.work.Add(1)
+	d.pool.mu.Unlock()
+	defer d.pool.work.Done()
+
 	if network != "tcp" && network != "tcp4" && network != "tcp6" {
 		return nil, &socks5.ReplyError{Code: 8, Err: errors.New("unsupported network")}
 	}
@@ -108,6 +143,8 @@ func (d *Dialer) DialContext(ctx context.Context, network, address string) (net.
 	}
 	ctx, stopSetup := context.WithTimeout(ctx, budget)
 	defer stopSetup()
+	stopLife := context.AfterFunc(d.lifetime, stopSetup)
+	defer stopLife()
 	select {
 	case <-ctx.Done():
 		return nil, ctx.Err()
@@ -121,6 +158,20 @@ func (d *Dialer) DialContext(ctx context.Context, network, address string) (net.
 			<-d.slots
 		}
 	}()
+	if scope, ok := isolation.Scope(ctx); ok && !d.options.DisableReuse {
+		canonical := strings.TrimSuffix(strings.ToLower(host), ".")
+		if ip, e := netip.ParseAddr(canonical); e == nil {
+			canonical = ip.Unmap().String()
+		}
+		key := poolKey{scope: scope, host: canonical, port: uint16(number), ipv6: network == "tcp6"}
+		conn, e := d.dialPooled(ctx, key, network, address, isOnion)
+		if e != nil {
+			return nil, replyError(e)
+		}
+		transferred = true
+		return conn, nil
+	}
+
 	life, cancel := context.WithCancel(d.lifetime)
 	stop := context.AfterFunc(ctx, cancel)
 	defer func() {
@@ -157,8 +208,18 @@ func (d *Dialer) DialContext(ctx context.Context, network, address string) (net.
 		}
 		return nil, context.Canceled
 	}
+	owned := &ownedConn{Conn: conn, circuit: c, cancel: cancel}
+	owned.release = func() { d.pool.mu.Lock(); delete(d.pool.dedicated, owned); d.pool.mu.Unlock(); <-d.slots }
+	d.pool.mu.Lock()
+	if d.pool.closed {
+		d.pool.mu.Unlock()
+		_ = conn.Close()
+		return nil, context.Canceled
+	}
+	d.pool.dedicated[owned] = struct{}{}
 	transferred = true
-	return &ownedConn{Conn: conn, circuit: c, cancel: cancel, release: func() { <-d.slots }}, nil
+	d.pool.mu.Unlock()
+	return owned, nil
 }
 func replyError(err error) error {
 	code := byte(1)

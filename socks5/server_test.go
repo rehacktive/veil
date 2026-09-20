@@ -11,6 +11,7 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+	"veil/isolation"
 )
 
 func destination(host string, port uint16) []byte {
@@ -71,6 +72,9 @@ func TestConnectPreservesHostnameAndPipelinedBytes(t *testing.T) {
 	for _, auth := range []bool{false, true} {
 		called := make(chan string, 1)
 		local, _, _ := startHandler(t, func(ctx context.Context, network, address string) (net.Conn, error) {
+			if _, shared := isolation.Scope(ctx); shared != auth {
+				t.Error("SOCKS isolation token lost or invented")
+			}
 			called <- network + " " + address
 			a, b := net.Pipe()
 			go func() {
@@ -253,5 +257,17 @@ func FuzzRequest(f *testing.F) {
 				t.Fatal("invalid success")
 			}
 		}
+	})
+}
+
+func FuzzNegotiate(f *testing.F) {
+	f.Add([]byte{5, 1, 0})
+	f.Add([]byte{5, 1, 2, 1, 1, 'u', 1, 'p'})
+	f.Fuzz(func(t *testing.T, raw []byte) {
+		connection := struct {
+			io.Reader
+			io.Writer
+		}{bytes.NewReader(raw), io.Discard}
+		_, _ = negotiate(context.Background(), connection)
 	})
 }

@@ -48,7 +48,8 @@ Acceptance: reject forged and expired directories, use only verified descriptors
 - [x] Integrate verified path selection with tracked guard attempts, confirmation, usability, build deadlines, cancellation, and bounded teardown.
 - [x] Provide ordered authenticated relay transport and `veil circuit-check`; test three-hop C Tor construction and a small directory exchange.
 - [x] Add bounded transient build retries in the client with a total setup deadline and persistent guard selection.
-- [ ] Add circuit pooling/multiplexing, mature rotation policy, and path-bias accounting.
+- [x] Add bounded circuit reuse within explicit isolation scopes and age/idle rotation with active-stream draining.
+- [ ] Add preemptive construction, adaptive circuit policy, and path-bias accounting.
 - [x] Multiplex TCP streams, BEGIN/CONNECTED/DATA/END, exit-side hostname resolution, and channel/circuit failure propagation.
 - [x] Implement authenticated v1 SENDME, fixed-window flow control, bounded backpressure, and stream deadlines.
 - [ ] Add stream retry policy, congestion-control negotiation, and additional negotiated protocol features.
@@ -56,7 +57,7 @@ Acceptance: reject forged and expired directories, use only verified descriptors
 
 Acceptance: transfer data in both directions over a native three-hop circuit in a controlled network, including large transfers, concurrent streams, EOF, cancellation, and failure propagation. Test DNS through Tor without local destination lookups. Validate against C Tor or Arti peers before public-network use.
 
-C Tor 0.4.9.12 interoperability passed for four concurrent 2 MiB round trips, exit-side DNS, EOF, DNS/policy errors, cancellation, deadlines, and circuit close. Protocol fixtures additionally cover forged/replayed SENDMEs, stalled readers, channel failure, and wire timeouts. Tor's currently implemented END closes both directions; TCP half-close is deferred until an interoperable protocol supports it. Pooling, mature isolation/rotation, stream retry policy, and production privacy behavior remain incomplete. The SOCKS client now owns circuit lifetimes and retries transient build failures within a bounded setup budget.
+C Tor 0.4.9.12 interoperability passed for four concurrent 2 MiB round trips, exit-side DNS, EOF, DNS/policy errors, cancellation, deadlines, and circuit close. Protocol fixtures additionally cover forged/replayed SENDMEs, stalled readers, channel failure, and wire timeouts. Tor's currently implemented END closes both directions; TCP half-close is deferred until an interoperable protocol supports it. Scoped pooling and draining rotation are implemented; broader adaptive policy, stream retry policy and production privacy behavior remain incomplete. The SOCKS client now owns circuit lifetimes and retries transient build failures within a bounded setup budget.
 
 ## 5. User-facing client — local and public SOCKS5 testing available
 
@@ -64,7 +65,8 @@ C Tor 0.4.9.12 interoperability passed for four concurrent 2 MiB round trips, ex
 - [x] Directory startup/refresh, readiness status, connection/circuit lifetime and idle limits, safe diagnostics, and private persistent state.
 - [x] Bundle official public-network authority/fallback pins, implement directory-only CREATE_FAST bootstrap, and verify real public HTTPS through SOCKS5.
 - [x] Add exclusive state ownership across all stateful CLI commands, crash-safe lock release, and bounded circuit-build retries.
-- [ ] Add mature circuit reuse/rotation and stream retry policy.
+- [x] Add explicit SOCKS token isolation, destination/family separation and bounded circuit reuse/rotation.
+- [ ] Add mature adaptive circuit policy and stream retry policy.
 - [ ] Implement applicable link/circuit padding and other privacy requirements for supported client behavior.
 - [x] End-to-end private-network curl checks, token negotiation, large HTTP transfers, SOCKS parser fuzzing, race tests, and resource-limit/cleanup tests.
 - [ ] Broaden protocol differential tests, sustained fuzzing, and independent security review.
@@ -81,12 +83,26 @@ The `make proxy-demo` launcher builds a private localhost network and prints a w
 - [x] Establish introductions and hs-ntor rendezvous with fresh keys/cookies, and install the AES-256/SHA3 service hop.
 - [x] Route SOCKS5 and Go client onion requests without exit/DNS fallback, with bounded setup and cleanup.
 - [x] Check upstream vectors, service-hop bulk transfer/SENDME, negative cases, fuzzing, and live public onion HTTP through the CLI.
-- [ ] Add client authorization, proof-of-work solving, subdomains, descriptor caching and service circuit reuse.
+- [x] Add scoped descriptor caching with expiry/revision enforcement and service circuit reuse.
+- [ ] Add client authorization, proof-of-work solving and subdomains.
 - [ ] Support introduction relays outside the current verified consensus and broaden private-network/differential testing.
 
 The live CLI fetched Tor Project's public v3 onion website (HTTP 200). This is an
 interoperability milestone with the same experimental privacy limits as the rest
 of the client. See README.md for the runnable command and scope.
+
+## 7. Browsing lifecycle — scoped reuse implemented
+
+- [x] Coalesce parallel builds for compatible scopes and share streams over healthy circuits.
+- [x] Keep untagged clients, different credentials, application IPs, listeners, destinations and IP families isolated.
+- [x] Retire old/failed circuits for new streams while active streams drain; evict idle entries within explicit bounds.
+- [x] Cache authenticated onion descriptors per scope and period, enforcing expiry and revision rollback/conflict rejection.
+- [x] Test concurrent traffic, waiter/build cancellation, shutdown, 200-request reconnect workloads and cache limits.
+- [x] Provide an opt-in public SOCKS reuse/rotation test, including parallel onion HTTP and the HTTPS Tor checker.
+
+This pool is intentionally conservative and requires explicit tokens. It neither
+infers browser sessions nor provides Tor Browser's privacy model. Live outcomes
+and remaining limits are recorded in VALIDATION.md and README.md.
 
 ## Later parity work
 

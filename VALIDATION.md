@@ -1,3 +1,74 @@
+# Veil 0.11 scoped reuse and caching validation
+
+Run on 2026-09-20, macOS arm64, Go 1.27.1.
+
+- Complete `go test -race -cover ./... -timeout=120s`: passed. Client coverage
+  **61.2%**, isolation package **100%**; opt-in public paths are excluded from
+  the ordinary unit-suite coverage figures.
+- `go vet ./...`: passed; executable rebuilt as **0.11.0-dev**.
+- Gosec 2.29.0: **46 production files, zero findings, zero loading errors**.
+  Suppression-disabled audit: exactly the existing **18** protocol exceptions.
+- Five-second `FuzzNegotiate`: **355,236 executions**, passed.
+- Existing relay/service encryption, SENDME, directory, guard, SOCKS and state
+  ownership regressions pass with the new client lifecycle.
+
+## Concurrency and resource checks
+
+Deterministic fixtures test 16 parallel connections sharing one build/circuit
+and transferring 4 MiB in total, cancellation of a waiting caller, setup deadlines
+remaining detached after connection establishment, and matching/mismatched scope,
+destination, port and family keys. Credential framing, separate API/SOCKS token
+namespaces, application-IP/listener boundaries and untagged dedicated behavior
+are checked separately.
+
+A 200-request workload repeatedly reuses four scopes, injects circuit failures
+and reconnects while checking circuit/connection bounds and final teardown.
+Tests retire aged circuits while active streams continue, close them after the
+last stream drains, evict idle entries, reject new BEGIN after directory expiry,
+avoid replaying failed BEGINs, and join in-progress builds on shutdown.
+
+Descriptor tests exercise shared fetches, independent waiter cancellation, deep
+copies, certificate/descriptor and period expiry, retained revision floors,
+rollback/conflicting revision rejection, unchanged-revision TTL preservation,
+cache capacity exhaustion, scope/period separation, and Close during a fetch.
+
+## Live public SOCKS test
+
+The opt-in `TestPublicSOCKSReuse` runs the real native client behind its loopback
+SOCKS5 server with explicit credentials and the existing persistent public guard
+state. HTTP keep-alive is disabled, so every request opens a distinct SOCKS/Tor
+stream. Normal HTTPS certificate validation remains enabled.
+
+The successful run completed in **18.77 seconds** (20.223 seconds including the
+Go test runner) and verified:
+
+- Tor Project's public v3 onion website: **10 HTTP 200 requests**. The initial
+  request and two waves of four parallel requests used the same service circuit.
+- Forced age retirement caused the tenth request to use a new service circuit;
+  the same scoped descriptor cache remained available.
+- The HTTPS Tor checker returned **IsTor=true**.
+- Test proxy, circuits and directory workers shut down; persistent state remained.
+
+Two preceding runs failed at initial onion setup before exercising reuse (SOCKS
+replies 2 and 1). Guard state was retained and no verification or retry policy was
+relaxed. The passing run demonstrates interoperability; initial relay/service
+availability is still variable, and the test intentionally does not hide failures
+with application-request retries.
+
+To reproduce, stop any proxy using that state directory first:
+
+```sh
+VEIL_PUBLIC_STATE="$PWD/state-public" go test -race ./client \
+  -run '^TestPublicSOCKSReuse$' -v -timeout=12m
+```
+
+The test skips unless the environment variable is set. It sends traffic to Tor
+Project's published onion site and HTTPS checker through native Tor, with no
+C Tor/Arti runtime. These checks do not establish production privacy parity or
+long-duration browser stability.
+
+---
+
 # Veil 0.10 v3 onion client validation
 
 Run on 2026-09-20, macOS arm64, Go 1.27.1.

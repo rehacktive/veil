@@ -28,15 +28,19 @@ func proxy(ctx context.Context, args []string, out, diagnostics io.Writer) (resu
 	build := f.Duration("build-timeout", 20*time.Second, "maximum time for each circuit build attempt")
 	attempts := f.Int("build-attempts", 3, "maximum circuit build attempts per connection (1..5); streams are not retried")
 	idle := f.Duration("idle-timeout", 5*time.Minute, "close a connection after this long without traffic")
-	lifetime := f.Duration("max-lifetime", time.Hour, "maximum lifetime of each connection and circuit")
+	lifetime := f.Duration("max-lifetime", time.Hour, "maximum lifetime of each connection")
 	maxConnections := f.Int("max-connections", 16, "maximum concurrent connections, including handshakes (1..256)")
+	reuse := f.Bool("circuit-reuse", true, "reuse circuits only within matching SOCKS tokens and destinations")
+	circuitAge := f.Duration("circuit-max-age", 10*time.Minute, "stop attaching streams to old circuits; let active streams finish")
+	circuitIdle := f.Duration("circuit-idle-timeout", 2*time.Minute, "close idle pooled circuits")
+	maxPool := f.Int("max-pooled-circuits", 16, "maximum pooled circuits including builds and draining circuits (1..256)")
 	if err := f.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			return nil
 		}
 		return err
 	}
-	if f.NArg() != 0 || (*public && *config != "" || !*public && *config == "") || *state == "" || *bootstrap <= 0 || *connect <= 0 || *onionTimeout <= 0 || *build <= 0 || *attempts < 1 || *attempts > 5 || *idle <= 0 || *lifetime <= 0 || *maxConnections < 1 || *maxConnections > 256 {
+	if *circuitAge <= 0 || *circuitIdle <= 0 || *maxPool < 1 || *maxPool > 256 || f.NArg() != 0 || (*public && *config != "" || !*public && *config == "") || *state == "" || *bootstrap <= 0 || *connect <= 0 || *onionTimeout <= 0 || *build <= 0 || *attempts < 1 || *attempts > 5 || *idle <= 0 || *lifetime <= 0 || *maxConnections < 1 || *maxConnections > 256 {
 		return errors.New("proxy requires exactly one of -public or -config, -state, positive timeouts, -build-attempts in 1..5, and -max-connections in 1..256")
 	}
 	if *public {
@@ -84,10 +88,11 @@ func proxy(ctx context.Context, args []string, out, diagnostics io.Writer) (resu
 		go func() { defer close(progressDone); publicProgress(progressCtx, manager, diagnostics) }()
 		defer func() { stopProgress(); <-progressDone }()
 	}
-	dialer, err := client.New(ctx, manager, guards, client.Options{BuildTimeout: *build, ConnectTimeout: *connect, OnionTimeout: *onionTimeout, BuildAttempts: *attempts, MaxCircuits: *maxConnections})
+	dialer, err := client.New(ctx, manager, guards, client.Options{DisableReuse: !*reuse, CircuitMaxAge: *circuitAge, CircuitIdleTimeout: *circuitIdle, MaxPooledCircuits: *maxPool, BuildTimeout: *build, ConnectTimeout: *connect, OnionTimeout: *onionTimeout, BuildAttempts: *attempts, MaxCircuits: *maxConnections})
 	if err != nil {
 		return err
 	}
+	defer func() { result = errors.Join(result, dialer.Close()) }()
 	return serveProxy(ctx, listener, manager, dialer.DialContext, *bootstrap, socks5.Options{ConnectTimeout: *connect, OnionTimeout: *onionTimeout, IdleTimeout: *idle, MaxLifetime: *lifetime, MaxConnections: *maxConnections}, out)
 }
 
@@ -119,7 +124,7 @@ func serveProxy(ctx context.Context, listener net.Listener, manager proxyDirecto
 		Event     string `json:"event"`
 		Listen    string `json:"listen"`
 		Isolation string `json:"isolation"`
-	}{"socks5_ready", listener.Addr().String(), "one circuit per connection"}
+	}{"socks5_ready", listener.Addr().String(), "SOCKS tokens + destination; untagged connections dedicated"}
 	if err = json.NewEncoder(out).Encode(status); err != nil {
 		return err
 	}

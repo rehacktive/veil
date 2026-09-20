@@ -145,8 +145,37 @@ installed after authenticating the service reply. Failed onion requests never
 fall back to exits or local DNS; application streams are not replayed.
 
 Public services only: client authorization, PoW solving and production privacy
-parity remain incomplete. Descriptor lifetime/revision is parsed but no
-persistent descriptor cache or cross-connection rollback history is maintained.
+parity remain incomplete. In 0.10, descriptor lifetime/revision was parsed but no
+persistent descriptor cache or cross-connection rollback history was maintained.
 A valid signed older descriptor can therefore still be used until its validity
 ends. The single additional dependency is Edwards25519 public-point/field math,
 pinned in go.mod/go.sum. This is not an independent cryptographic review.
+
+## Scoped reuse milestone follow-up (0.11)
+
+Gosec 2.29.0 reports **46 production files, zero findings and zero loading
+errors**. The suppression-disabled audit still reports exactly **18** existing
+protocol annotations. No suppressions or dependencies were added for pooling,
+isolation tokens, descriptor caching or rotation.
+
+Reuse requires explicit tokens plus matching destination, port and IP family.
+SOCKS scopes additionally include application IP and listener address; credentials
+are hashed with length framing and cleared from parser buffers. API tokens use a
+separate namespace. Tokens are not access-control credentials. Untagged requests
+continue to use dedicated circuits, and all state remains private to a Dialer.
+
+Pooled setup detaches caller deadlines before publishing a circuit. Individual
+stream cancellation/Close does not cancel another stream's circuit. Failed BEGIN
+operations retire the circuit for future attachments without replaying the failed
+request or killing healthy active streams. Expired directories reject new BEGINs,
+including after waiting for a build. Age retirement drains active streams; idle
+and failed entries are bounded and discarded. Shutdown cancels and joins pending
+builds and closes circuits before the CLI releases directory state ownership.
+
+Descriptors are verified before caching. The 128-record memory bound includes
+revision history; live history is never evicted to accept new keys. Expired
+plaintext is not reused, lower revisions and equal-revision conflicts fail, and
+an equal revision cannot refresh the original TTL. History is scoped and lasts
+through its blinded-key period, with expired records pruned on cache access.
+No history survives restart; neither first-seen rollback nor cross-scope rollback
+can be detected. See README.md for the remaining experimental privacy limits.

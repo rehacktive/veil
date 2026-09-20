@@ -16,9 +16,9 @@ import (
 	"veil/cell"
 )
 
-const version = "0.10.0-dev"
+const version = "0.11.0-dev"
 
-const usage = `Veil: a native Go rewrite of Arti, stage 6 (SOCKS5 and v3 onion client)
+const usage = `Veil: a native Go rewrite of Arti, stage 7 (SOCKS5 and v3 onion client)
 
 Usage:
   veil version
@@ -44,8 +44,8 @@ printing JSON only when status changes. circuit-check re-verifies a live cache,
 selects and authenticates a three-hop circuit, then closes it. It requires
 exclusive access to its state directory. The Go Circuit.DialContext API provides
 TCP streams. proxy maintains the directory, accepts loopback SOCKS5 CONNECT
-requests for public internet and v3 onion services, with a fresh application
-circuit per connection. Onion setup has a separate -onion-timeout (default 3m).
+requests for public internet and v3 onion services, with circuits shared only within matching explicit SOCKS tokens and destinations.
+Untagged connections use dedicated circuits. Onion setup has a separate -onion-timeout (default 3m).
 -public uses bundled Tor
 authority/fallback pins; -config selects a controlled network. Use make proxy-demo
 for a temporary local test or make public-proxy for public-network testing.
@@ -77,7 +77,7 @@ func runContext(ctx context.Context, args []string, in io.Reader, out, diagnosti
 		if len(args) != 1 {
 			return errors.New("version takes no arguments")
 		}
-		_, err := fmt.Fprintf(out, "Veil %s (stage 6; native SOCKS5 and v3 onion client)\n", version)
+		_, err := fmt.Fprintf(out, "Veil %s (stage 7; native SOCKS5 and v3 onion client)\n", version)
 		return err
 	case "proxy":
 		return proxy(ctx, args[1:], out, diagnostics)

@@ -2,7 +2,7 @@
 
 Veil is a staged, native Go rewrite of [Arti](https://github.com/zydou/arti), the Rust Tor implementation. This is an independent, experimental project, not an official Tor Project release.
 
-**Current stage: experimental SOCKS5 client with public internet and v3 onion support.** It authenticates relay channels, downloads and verifies directory documents over native one-hop directory circuits (pinned CREATE_FAST for public bootstrap, ntor afterward), refreshes private caches, and maintains sampled/confirmed/primary guards. It selects compatible guard/middle/exit paths and builds them with CREATE2, EXTEND2, and type-2 ntor. It multiplexes TCP streams through a cancellable Go `net.Conn` API with authenticated SENDME flow control and exit-side DNS. `veil proxy` exposes those streams through a loopback SOCKS5 CONNECT listener, with a fresh circuit for each connection. V3 onion connections use authenticated descriptors, hs-ntor introductions/rendezvous, and an encrypted service hop. The Go implementation needs no Rust runtime, C Tor process, or cgo. It uses `filippo.io/edwards25519` for public-key blinding and coordinate conversion. An optional interoperability test launches C Tor separately as a test peer.
+**Current stage: experimental SOCKS5 client with public internet and v3 onion support.** It authenticates relay channels, downloads and verifies directory documents over native one-hop directory circuits (pinned CREATE_FAST for public bootstrap, ntor afterward), refreshes private caches, and maintains sampled/confirmed/primary guards. It selects compatible guard/middle/exit paths and builds them with CREATE2, EXTEND2, and type-2 ntor. It multiplexes TCP streams through a cancellable Go `net.Conn` API with authenticated SENDME flow control and exit-side DNS. `veil proxy` exposes those streams through a loopback SOCKS5 CONNECT listener, with circuit reuse inside explicit isolation scopes and dedicated circuits for untagged connections. V3 onion connections use authenticated descriptors, hs-ntor introductions/rendezvous, and an encrypted service hop. The Go implementation needs no Rust runtime, C Tor process, or cgo. It uses `filippo.io/edwards25519` for public-key blinding and coordinate conversion. An optional interoperability test launches C Tor separately as a test peer.
 
 ## Browse the public internet
 
@@ -82,7 +82,8 @@ the descriptor, then establishes an hs-ntor rendezvous and encrypted service
 stream. Onion requests never use exit DNS or fall back to a direct connection.
 The Go `client.Dialer` supports the same `host.onion:port` destinations.
 
-Each connection fetches a fresh descriptor and owns its service circuit. HSDir
+Connections in the same explicit session scope can reuse service circuits and
+verified descriptors. Untagged connections fetch independently. HSDir
 fetches use three hops and close before introduction; setup uses at most two
 simultaneous three-hop circuits per connection slot. Descriptors are bounded to
 50,000 bytes and stay in memory. The default onion setup budget is three minutes
@@ -90,10 +91,60 @@ simultaneous three-hop circuits per connection slot. Descriptors are bounded to
 attempts for supported transient failures. Authentication failures stop setup.
 
 This supports public v3 services. Client authorization/restricted discovery,
-proof-of-work solving, onion subdomains, legacy v2 addresses, service hosting,
-and service-circuit/descriptor caching are not implemented. Introduction points
+proof-of-work solving, onion subdomains, legacy v2 addresses and service hosting
+are not implemented. Introduction points
 must appear with matching identity and ntor keys in the current verified
 consensus. Services requiring the unsupported features may fail to connect.
+
+## Reuse circuits within a session
+
+The existing proxy command enables reuse for clients that send SOCKS5
+username/password tokens. Reuse requires the same two token fields, application
+IP, proxy listener, destination hostname/IP, destination port and IP family.
+Different onion services always remain separate. Requests without tokens keep
+getting dedicated circuits; ordinary browser proxy settings alone do not enable
+sharing because Veil cannot infer which application/session owns a connection.
+
+For repeated curl requests, keep the same test-session token:
+
+```sh
+curl --fail --max-time 180 --noproxy '' \
+  --socks5-hostname 127.0.0.1:9050 --proxy-user 'test-session:one' \
+  https://example.com/
+```
+
+Run it again to reuse the circuit. Use a different token for an unrelated session.
+These are grouping labels, not passwords checked against an account. Every HTTP
+request still opens its own stream; no failed BEGIN or application data is replayed.
+A known-dead circuit is discarded before the next request attempts a stream.
+
+Default limits:
+
+- Stop adding streams after **10 minutes** (`-circuit-max-age`). Active streams
+  finish normally, subject to their existing connection timeouts.
+- Close pooled circuits after **2 minutes idle** (`-circuit-idle-timeout`).
+- Keep at most **16 pooled circuits**, counting builds, active and draining
+  circuits (`-max-pooled-circuits`). Idle entries can be evicted for new scopes.
+- Share at most **16 simultaneous streams per circuit**. The independent
+  `-max-connections` limit still bounds all active/pending SOCKS connections.
+  Dedicated circuits count toward that connection limit, outside the pool.
+
+Use `-circuit-reuse=false` to retain dedicated circuits even with tokens.
+Descriptors still cache within explicit scopes. The cache holds at most 128
+service/period/scope records in memory. It enforces descriptor/certificate expiry,
+rejects lower revisions and conflicting bytes at the same revision, and retains
+revision floors until the blinded-key period ends. Re-fetching the same revision
+cannot extend its original cache lifetime. A full cache rejects new entries until
+period history expires; it never discards a live revision floor to make room.
+Expired records are pruned on cache access. No descriptor history survives
+process restart or crosses isolation scopes.
+
+Library callers opt in with `isolation.WithToken(ctx, "session-name")` before
+calling `client.Dialer.DialContext`. Close every returned connection, then call
+`Dialer.Close()` before releasing the directory state lock. Closing the dialer
+cancels pending builds and active circuits, joins its pool workers and clears the
+in-memory descriptor cache. This remains an experimental, conservative pool;
+it does not implement Tor Browser site isolation or full Arti circuit policy.
 
 ## Try SOCKS5 locally
 
@@ -156,19 +207,19 @@ of `-config` for the bundled public Tor network setup above.
 Defaults are 16 simultaneous connections (including pending handshakes), a
 10-second SOCKS handshake, a 1-minute ordinary connection deadline (3 minutes
 for onion setup, controlled by `-onion-timeout`), 5 minutes idle,
-and a 1-hour maximum connection/circuit lifetime. Circuit construction has up to
+and a 1-hour maximum connection lifetime. Circuit construction has up to
 three attempts of at most 20 seconds each, sharing the total connection budget
 with backoff and stream establishment. Use `-build-attempts 1` to disable retries,
 or adjust `-build-attempts` (1..5), `-build-timeout` and `-connect-timeout`. `veil proxy -h` lists the controls.
-Listeners must be numeric loopback addresses. Every connection gets its own
-application circuit, including connections with equal SOCKS username/password tokens; guards
-remain shared and persistent. Tokens are accepted as isolation-compatible client
-metadata, **not access-control credentials**. Other local processes can use the
+Listeners must be numeric loopback addresses. Explicit SOCKS tokens permit reuse
+within the same application IP, listener, destination, port and address family.
+Untagged connections remain dedicated; guards stay shared and persistent. Tokens
+are isolation metadata, **not access-control credentials**. Other local processes can use the
 listener. No destinations, payloads, credentials, or selected paths are logged.
 
 CONNECT supports hostnames and numeric IPv4/IPv6 addresses. Hostnames currently
 use IPv4 exits. BIND, UDP, SOCKS4, GSSAPI, automatic stream retries,
-circuit pooling, and TCP half-close are unsupported. Tor END closes both
+and TCP half-close are unsupported. Tor END closes both
 stream directions. There is no direct-connect fallback. A fatal directory
 verification/state error stops the proxy; expired snapshots reject new circuits.
 One process must own the state directory. Public-network anonymity, traffic
@@ -218,7 +269,7 @@ The address must be a numeric `IP:port` (bracket IPv6). The RSA fingerprint is 4
 | `directory` | `tor-netdoc`, initial `tor-dirmgr`/`tor-guardmgr`/path selection | Authority certificates, signed microdescriptor consensus, digest binding, native BEGIN_DIR fetches, private cache, refresh/retry manager, reusable channels, sampled/confirmed/primary guards, weighted path selection |
 | `circuit` | `tor-proto/circuit`, circuit construction | Verified three-hop selection, tracked guard attempts, CREATE2/EXTEND2, RELAY_EARLY budget, ordered relay messages, multiplexed `net.Conn` streams, SENDME/backpressure, deadlines/cancellation, bounded teardown |
 | `onion` | `tor-hscrypto`, `tor-netdoc/hsdesc` | V3 addresses, blinded keys, authenticated/decrypted descriptors, hs-ntor |
-| `client` | Client lifecycle | Verified snapshot/guard integration, a dedicated circuit per connection, bounded concurrent circuits, lifetime ownership and SOCKS failure mapping |
+| `client` | Client lifecycle | Verified snapshot/guard integration, scoped circuit reuse/rotation, dedicated untagged circuits, bounded descriptor caching, lifetime ownership and SOCKS failure mapping |
 | `socks5` | SOCKS frontend | Loopback CONNECT, IPv4/IPv6/hostnames, token negotiation, bounded connections, timeouts, bidirectional relay and cleanup |
 | `cmd/veil` | Client and development tooling | `proxy`, version/help, offline frame inspection, pinned channel check, directory-check, directory-bootstrap, directory-watch, and circuit-check |
 
@@ -382,7 +433,8 @@ circuit. Unknown authenticated commands and DROP are ignored with bounded runs.
 Canceled queued sends and individual receives leave the circuit usable; failed
 writes after encryption terminate it. `Close` joins the reader/lifetime loops and
 attempts a bounded DESTROY with reason NONE before closing the dedicated channel.
-Channel/circuit pooling and production padding remain future work. Protocol
+Channel sharing across circuits and production padding remain future work;
+the client now pools complete circuits within explicit isolation scopes. Protocol
 references: [circuit construction](https://spec.torproject.org/tor-spec/creating-circuits.html),
 [RELAY_EARLY](https://spec.torproject.org/tor-spec/relay-early.html), and
 [teardown](https://spec.torproject.org/tor-spec/tearing-down-circuits.html).
@@ -542,7 +594,7 @@ circuit-close propagation. All network fixtures bind only to localhost and are
 removed on exit. This test uses explicit test-only hop pins; production path
 selection still enforces subnet separation and verified exit summaries.
 
-Remaining work includes circuit pooling/rotation, stream retry policy, padding and independent privacy/security review; see [ROADMAP.md](ROADMAP.md). Public HTTPS interoperability has been tested. TLS traffic fingerprint parity and end-to-end anonymity properties remain **unvalidated**. Recorded results and limits are in [VALIDATION.md](VALIDATION.md).
+Remaining work includes adaptive circuit management, stream retry policy, padding and independent privacy/security review; see [ROADMAP.md](ROADMAP.md). Public HTTPS interoperability has been tested. TLS traffic fingerprint parity and end-to-end anonymity properties remain **unvalidated**. Recorded results and limits are in [VALIDATION.md](VALIDATION.md).
 
 ## License
 
