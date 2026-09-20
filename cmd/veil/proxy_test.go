@@ -65,12 +65,12 @@ func TestProxyCLIFlags(t *testing.T) {
 			t.Fatal(args)
 		}
 	}
-	if err := run([]string{"proxy", "-h"}, strings.NewReader(""), io.Discard, io.Discard); err != nil {
+	if err := run([]string{"proxy", "-onion-only", "-h"}, strings.NewReader(""), io.Discard, io.Discard); err != nil {
 		t.Fatal(err)
 	}
 }
 func TestProxyDirectoryLifecycle(t *testing.T) {
-	for _, stage := range []string{"startup-timeout", "startup-failure", "output-failure", "live-failure", "shutdown"} {
+	for _, stage := range []string{"startup-timeout", "startup-failure", "output-failure", "live-failure", "shutdown", "onion-only"} {
 		t.Run(stage, func(t *testing.T) {
 			ctx, cancel := context.WithCancel(context.Background())
 			defer cancel()
@@ -92,9 +92,9 @@ func TestProxyDirectoryLifecycle(t *testing.T) {
 			}
 			done := make(chan error, 1)
 			go func() {
-				done <- serveProxy(ctx, listener, m, func(context.Context, string, string) (net.Conn, error) { return nil, errors.New("test dial failure") }, 30*time.Millisecond, socks5.Options{}, out)
+				done <- serveProxy(ctx, listener, m, func(context.Context, string, string) (net.Conn, error) { return nil, errors.New("test dial failure") }, 30*time.Millisecond, socks5.Options{OnionOnly: stage == "onion-only"}, out)
 			}()
-			if stage == "live-failure" || stage == "shutdown" {
+			if stage == "live-failure" || stage == "shutdown" || stage == "onion-only" {
 				var status map[string]string
 				select {
 				case raw := <-ready:
@@ -106,6 +106,13 @@ func TestProxyDirectoryLifecycle(t *testing.T) {
 				}
 				if status["event"] != "socks5_ready" {
 					t.Fatal(status)
+				}
+				wantMode := "all"
+				if stage == "onion-only" {
+					wantMode = "onion-only"
+				}
+				if status["mode"] != wantMode {
+					t.Fatal("wrong readiness mode", status)
 				}
 				conn, err := net.Dial("tcp", status["listen"])
 				if err != nil {
@@ -128,7 +135,7 @@ func TestProxyDirectoryLifecycle(t *testing.T) {
 			}
 			select {
 			case err := <-done:
-				if stage == "shutdown" && err != nil {
+				if (stage == "shutdown" || stage == "onion-only") && err != nil {
 					t.Fatal(err)
 				}
 				if strings.HasSuffix(stage, "failure") && err == nil {

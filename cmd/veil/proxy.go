@@ -18,6 +18,7 @@ import (
 func proxy(ctx context.Context, args []string, out, diagnostics io.Writer) (result error) {
 	f := flag.NewFlagSet("proxy", flag.ContinueOnError)
 	f.SetOutput(diagnostics)
+	onionOnly := f.Bool("onion-only", false, "dark mode: permit only valid v3 onion application destinations")
 	public := f.Bool("public", false, "use bundled public Tor authority/fallback pins; no bootstrap JSON needed")
 	config := f.String("config", "", "bootstrap JSON with trusted authority and relay pins")
 	state := f.String("state", "", "private state directory; one process must own it")
@@ -88,12 +89,12 @@ func proxy(ctx context.Context, args []string, out, diagnostics io.Writer) (resu
 		go func() { defer close(progressDone); publicProgress(progressCtx, manager, diagnostics) }()
 		defer func() { stopProgress(); <-progressDone }()
 	}
-	dialer, err := client.New(ctx, manager, guards, client.Options{DisableReuse: !*reuse, CircuitMaxAge: *circuitAge, CircuitIdleTimeout: *circuitIdle, MaxPooledCircuits: *maxPool, BuildTimeout: *build, ConnectTimeout: *connect, OnionTimeout: *onionTimeout, BuildAttempts: *attempts, MaxCircuits: *maxConnections})
+	dialer, err := client.New(ctx, manager, guards, client.Options{OnionOnly: *onionOnly, DisableReuse: !*reuse, CircuitMaxAge: *circuitAge, CircuitIdleTimeout: *circuitIdle, MaxPooledCircuits: *maxPool, BuildTimeout: *build, ConnectTimeout: *connect, OnionTimeout: *onionTimeout, BuildAttempts: *attempts, MaxCircuits: *maxConnections})
 	if err != nil {
 		return err
 	}
 	defer func() { result = errors.Join(result, dialer.Close()) }()
-	return serveProxy(ctx, listener, manager, dialer.DialContext, *bootstrap, socks5.Options{ConnectTimeout: *connect, OnionTimeout: *onionTimeout, IdleTimeout: *idle, MaxLifetime: *lifetime, MaxConnections: *maxConnections}, out)
+	return serveProxy(ctx, listener, manager, dialer.DialContext, *bootstrap, socks5.Options{OnionOnly: *onionOnly, ConnectTimeout: *connect, OnionTimeout: *onionTimeout, IdleTimeout: *idle, MaxLifetime: *lifetime, MaxConnections: *maxConnections}, out)
 }
 
 type proxyDirectory interface {
@@ -120,11 +121,16 @@ func serveProxy(ctx context.Context, listener net.Listener, manager proxyDirecto
 	if err != nil {
 		return err
 	}
+	mode := "all"
+	if options.OnionOnly {
+		mode = "onion-only"
+	}
 	status := struct {
+		Mode      string `json:"mode"`
 		Event     string `json:"event"`
 		Listen    string `json:"listen"`
 		Isolation string `json:"isolation"`
-	}{"socks5_ready", listener.Addr().String(), "SOCKS tokens + destination; untagged connections dedicated"}
+	}{mode, "socks5_ready", listener.Addr().String(), "SOCKS tokens + destination; untagged connections dedicated"}
 	if err = json.NewEncoder(out).Encode(status); err != nil {
 		return err
 	}

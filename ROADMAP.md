@@ -65,6 +65,7 @@ C Tor 0.4.9.12 interoperability passed for four concurrent 2 MiB round trips, ex
 - [x] Directory startup/refresh, readiness status, connection/circuit lifetime and idle limits, safe diagnostics, and private persistent state.
 - [x] Bundle official public-network authority/fallback pins, implement directory-only CREATE_FAST bootstrap, and verify real public HTTPS through SOCKS5.
 - [x] Add exclusive state ownership across all stateful CLI commands, crash-safe lock release, and bounded circuit-build retries.
+- [x] Add opt-in onion-only destination policy in the CLI, SOCKS server and Go dialer, with explicit readiness mode.
 - [x] Add explicit SOCKS token isolation, destination/family separation and bounded circuit reuse/rotation.
 - [ ] Add mature adaptive circuit policy and stream retry policy.
 - [ ] Implement applicable link/circuit padding and other privacy requirements for supported client behavior.

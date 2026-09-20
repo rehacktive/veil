@@ -1,3 +1,38 @@
+# Veil 0.12 onion-only mode validation
+
+Run on 2026-09-20, macOS arm64, Go 1.27.1.
+
+- Complete `go test -race ./... -timeout=120s`: passed.
+- `go vet ./...`: passed; executable rebuilt as **0.12.0-dev**.
+- Gosec 2.29.0: **46 production files, zero findings, zero loading errors**,
+  with **18** existing protocol annotations and no new suppressions.
+- Policy tests cover scoped and untagged requests, full connection capacity,
+  cached exit circuits, ordinary names, literal IPs, invalid onion addresses,
+  valid onion routing and reuse, and authenticated/anonymous SOCKS negotiation.
+- CLI lifecycle tests verify readiness reports `mode: "onion-only"` when enabled
+  and `mode: "all"` otherwise.
+
+## Live onion-only SOCKS test
+
+Started the rebuilt CLI with the existing public directory and guard state:
+
+```sh
+./bin/veil proxy -public -onion-only -state ./state-public -listen 127.0.0.1:19050
+```
+
+The listener reported `socks5_ready` with `mode: "onion-only"`. Raw SOCKS5
+CONNECT requests for `example.com:443`, `1.1.1.1:443` and
+`[2606:4700:4700::1111]:443` each received reply **2** (ruleset denial).
+A curl request through that same listener, using remote hostname handling and
+explicit SOCKS credentials, fetched the Tor Project v3 onion site's `/index.html`:
+**HTTP 200, 23,597 bytes**, with title `Tor Project | Anonymity Online`.
+The test proxy was stopped afterward; persistent state was preserved.
+
+This verifies the application-destination policy and a live onion connection;
+it does not establish production privacy parity or restrict traffic outside Veil.
+
+---
+
 # Veil 0.11 scoped reuse and caching validation
 
 Run on 2026-09-20, macOS arm64, Go 1.27.1.

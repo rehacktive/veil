@@ -29,7 +29,11 @@ type streamCircuit interface {
 }
 type buildFunc func(context.Context, *directory.Snapshot, circuit.Options) (streamCircuit, error)
 
+// ErrOnionOnly reports a destination blocked by the onion-only application policy.
+var ErrOnionOnly = errors.New("onion-only mode requires a valid v3 onion destination")
+
 type Options struct {
+	OnionOnly          bool          // Reject every application destination except a valid v3 onion address.
 	MaxPooledCircuits  int           // Pool bound including active/building/idle entries; default 16, max 256.
 	CircuitMaxAge      time.Duration // Stop attaching streams after this age; default 10 minutes. Active streams drain.
 	CircuitIdleTimeout time.Duration // Close unused pooled circuits; default 2 minutes.
@@ -128,6 +132,11 @@ func (d *Dialer) DialContext(ctx context.Context, network, address string) (net.
 	number, err := strconv.ParseUint(port, 10, 16)
 	if err != nil || number == 0 {
 		return nil, errors.New("invalid destination port")
+	}
+	if d.options.OnionOnly {
+		if _, err := onion.ParseAddress(host); err != nil {
+			return nil, &socks5.ReplyError{Code: 2, Err: ErrOnionOnly}
+		}
 	}
 	isOnion := onion.IsAddress(host)
 	budget := d.options.ConnectTimeout

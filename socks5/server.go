@@ -22,6 +22,7 @@ import (
 type DialFunc func(context.Context, string, string) (net.Conn, error)
 
 type Options struct {
+	OnionOnly        bool          // Reject non-v3-onion CONNECT destinations before calling the dialer.
 	MaxConnections   int           // Default 16, maximum 256; includes pending handshakes.
 	HandshakeTimeout time.Duration // Default 10 seconds.
 	ConnectTimeout   time.Duration // Default 1 minute, including circuit build.
@@ -143,6 +144,12 @@ func handle(parent context.Context, local net.Conn, dial DialFunc, o Options) {
 	// The connect timeout covers the native circuit build as well as BEGIN.
 	budget := o.ConnectTimeout
 	host, _, _ := net.SplitHostPort(address)
+	if o.OnionOnly {
+		if _, err := onion.ParseAddress(host); err != nil {
+			_ = reply(local, 2)
+			return
+		}
+	}
 	if onion.IsAddress(host) {
 		budget = o.OnionTimeout
 	}

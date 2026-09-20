@@ -271,3 +271,32 @@ func FuzzNegotiate(f *testing.F) {
 		_, _ = negotiate(context.Background(), connection)
 	})
 }
+
+func TestOnionOnlySOCKSPolicy(t *testing.T) {
+	const host = "2gzyxa5ihm7nsggfxnu52rck2vv4rvmdlkiu3zzui5du4xyclen53wid.onion"
+	requests := [][]byte{destination("example.com", 443), destination("127.0.0.1", 80), {5, 1, 0, 1, 127, 0, 0, 1, 0, 80}, append(append([]byte{5, 1, 0, 4}, make([]byte, 16)...), 0, 80), destination(host, 80)}
+	for i, request := range requests {
+		for _, auth := range []bool{false, true} {
+			var called atomic.Bool
+			local, _, _ := startHandler(t, func(context.Context, string, string) (net.Conn, error) {
+				called.Store(true)
+				return nil, &ReplyError{Code: 4, Err: errors.New("test service unavailable")}
+			}, Options{OnionOnly: true})
+			if auth {
+				exchange(t, local, []byte{5, 1, 2}, []byte{5, 2})
+				exchange(t, local, []byte{1, 1, 'u', 1, 'p'}, []byte{1, 0})
+			} else {
+				exchange(t, local, []byte{5, 1, 0}, []byte{5, 0})
+			}
+			want := byte(2)
+			allowed := i == len(requests)-1
+			if allowed {
+				want = 4
+			}
+			exchange(t, local, request, []byte{5, want, 0, 1, 0, 0, 0, 0, 0, 0})
+			if called.Load() != allowed {
+				t.Fatal("SOCKS policy bypass or valid service rejected")
+			}
+		}
+	}
+}

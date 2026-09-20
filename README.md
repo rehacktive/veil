@@ -96,6 +96,34 @@ are not implemented. Introduction points
 must appear with matching identity and ntor keys in the current verified
 consensus. Services requiring the unsupported features may fail to connect.
 
+## Onion-only (dark) mode
+
+To permit only v3 onion application destinations:
+
+```sh
+make build
+./bin/veil proxy -public -onion-only -state ./state-public -listen 127.0.0.1:9050
+```
+
+Wait for `socks5_ready` with `"mode":"onion-only"`, then use the onion curl
+command above. Ordinary hostnames and literal IPv4/IPv6 destinations are rejected
+with SOCKS reply **2** (connection not allowed by ruleset). Malformed requests
+may receive parser errors instead. Invalid, legacy v2 and unsupported onion
+addresses are also rejected; only valid supported v3 addresses proceed.
+
+Both the SOCKS frontend and native Go dialer enforce the policy before destination
+lookup, circuit construction, connection-slot waiting or pooled-circuit reuse.
+Valid onion requests retain the usual descriptor verification and isolation rules.
+Library callers enable the same restriction with `client.Options{OnionOnly: true}`;
+policy failures can be checked with `errors.Is(err, client.ErrOnionOnly)`.
+A standalone SOCKS server can also use `socks5.Options{OnionOnly: true}`.
+
+The flag defaults to false and is not persisted in the state directory; include
+it each time you start dark mode. Normal mode reports `"mode":"all"`.
+`-public` still selects public Tor bootstrap data. Veil must still contact Tor
+relays/directories by IP; this is an application-destination restriction, not an
+IP firewall or a block on connections applications make outside this proxy.
+
 ## Reuse circuits within a session
 
 The existing proxy command enables reuse for clients that send SOCKS5

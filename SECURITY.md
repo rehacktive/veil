@@ -179,3 +179,19 @@ an equal revision cannot refresh the original TTL. History is scoped and lasts
 through its blinded-key period, with expired records pruned on cache access.
 No history survives restart; neither first-seen rollback nor cross-scope rollback
 can be detected. See README.md for the remaining experimental privacy limits.
+
+## Onion-only policy follow-up (0.12)
+
+The opt-in onion-only policy is enforced independently by the SOCKS frontend and
+native Go dialer. Only addresses accepted by the existing v3 onion parser can
+proceed. Hostnames, literal IP destinations and invalid onion addresses are
+rejected before destination lookup, circuit construction or pooled-circuit reuse;
+the dialer also rejects them before waiting for connection capacity. There is no
+exit fallback. Tor relay and directory IP connections remain necessary, and the
+policy cannot restrict application traffic sent outside this proxy.
+
+Gosec 2.29.0 reports **46 production files, zero findings and zero loading
+errors**, with the unchanged **18** protocol annotations. No cryptographic
+changes, dependencies or suppressions were introduced. Race tests and vet pass;
+live SOCKS checks rejected hostname, IPv4 and IPv6 destinations while the public
+Tor Project v3 onion site returned HTTP 200. See [VALIDATION.md](VALIDATION.md).
