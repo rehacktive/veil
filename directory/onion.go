@@ -230,7 +230,7 @@ func (s *Snapshot) SelectInternalPath(guard Relay, target *Relay, now time.Time)
 	if err != nil {
 		return Path{}, err
 	}
-	return Path{g, middle, end}, nil
+	return Path{Guard: g, Middle: middle, Exit: end}, nil
 }
 
 // ServicePeriod describes one of the two overlapping publication rings.

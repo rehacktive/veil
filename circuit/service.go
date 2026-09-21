@@ -22,7 +22,7 @@ func (c *Circuit) EstablishIntroduction(ctx context.Context, sign func([20]byte)
 	c.mu.Unlock()
 	payload := sign(binding)
 	clear(binding[:])
-	if _, err := c.Send(ctx, 2, cell.RelayMessage{Command: cell.RelayEstablishIntro, Data: payload}); err != nil {
+	if _, err := c.Send(ctx, c.relayEnd, cell.RelayMessage{Command: cell.RelayEstablishIntro, Data: payload}); err != nil {
 		return err
 	}
 	m, err := c.Receive(ctx)
@@ -57,7 +57,7 @@ func (c *Circuit) JoinService(ctx context.Context, cookie [20]byte, reply [64]by
 	}
 	c.hs.stage = 1
 	c.port = port
-	c.endHop.Store(3)
+	c.endHop.Add(1)
 	c.mode = 2
 	c.streams = newStreamMux(c)
 	c.streams.service = true
@@ -66,7 +66,7 @@ func (c *Circuit) JoinService(ctx context.Context, cookie [20]byte, reply [64]by
 	c.mu.Unlock()
 	payload := append(cookie[:0:0], cookie[:]...)
 	payload = append(payload, reply[:]...)
-	_, err = c.send(ctx, 2, cell.RelayMessage{Command: cell.RelayRendezvous1, Data: payload}, nil, nil)
+	_, err = c.send(ctx, c.relayEnd, cell.RelayMessage{Command: cell.RelayRendezvous1, Data: payload}, nil, nil)
 	if err != nil {
 		c.shutdown(err)
 	}
@@ -82,7 +82,7 @@ type IncomingStream struct{ stream *streamConn }
 func (s *IncomingStream) Close() error { return s.stream.Close() }
 func (s *IncomingStream) Accept(ctx context.Context) (net.Conn, error) {
 	m := s.stream.mux
-	_, err := m.c.send(ctx, 3, cell.RelayMessage{Command: cell.RelayConnected, StreamID: s.stream.id}, func(_ *cell.RelayMessage) error {
+	_, err := m.c.send(ctx, m.c.relayEnd+1, cell.RelayMessage{Command: cell.RelayConnected, StreamID: s.stream.id}, func(_ *cell.RelayMessage) error {
 		m.mu.Lock()
 		defer m.mu.Unlock()
 		if s.stream.connected || s.stream.closed || s.stream.err != nil {
@@ -117,7 +117,7 @@ func (c *Circuit) AcceptService(ctx context.Context) (*IncomingStream, error) {
 // Called only by the stream reader with m.mu held. Reject reused IDs and bound
 // both active requests and retained replay/late-data state by the 16-bit ID space.
 func (m *streamMux) incomingBegin(msg Message) error {
-	if !m.service || msg.Hop != 3 || msg.StreamID == 0 || m.streams[msg.StreamID] != nil {
+	if !m.service || msg.Hop != m.c.relayEnd+1 || msg.StreamID == 0 || m.streams[msg.StreamID] != nil {
 		return ErrProtocol
 	}
 	if _, old := m.retired[msg.StreamID]; old {

@@ -132,8 +132,12 @@ func (f relayFixture) frames(t *testing.T) []cell.Cell {
 
 // serveHandshake is a local relay fixture, not C Tor. Certificate encoding and
 // verification are also covered by independent checked-in Arti fixtures.
-func serveHandshake(raw net.Conn, f relayFixture, frames []cell.Cell, versions []uint16, maxTLS uint16) (*tls.Conn, *cell.Codec, error) {
-	conn := tls.Server(raw, &tls.Config{Certificates: []tls.Certificate{f.tlsCert}, MinVersion: tls.VersionTLS12, MaxVersion: maxTLS})
+func serveHandshake(raw net.Conn, f relayFixture, frames []cell.Cell, versions []uint16, maxTLS uint16, configure ...func(*tls.Config)) (*tls.Conn, *cell.Codec, error) {
+	config := &tls.Config{Certificates: []tls.Certificate{f.tlsCert}, MinVersion: tls.VersionTLS12, MaxVersion: maxTLS}
+	for _, edit := range configure {
+		edit(config)
+	}
+	conn := tls.Server(raw, config)
 	if err := conn.Handshake(); err != nil {
 		return nil, nil, err
 	}

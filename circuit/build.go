@@ -1,4 +1,4 @@
-// Package circuit constructs native three-hop Tor circuits. It exposes relay
+// Package circuit constructs native three- and four-hop Tor circuits. It exposes relay
 // messages or multiplexed net.Conn streams with fixed-window flow control.
 // Circuit pooling and production anonymity guarantees are not provided.
 package circuit
@@ -18,6 +18,7 @@ import (
 )
 
 type Options struct {
+	ChannelPool  *channel.Pool // Optional owner-scoped shared guard transport.
 	Port         uint16        // Required destination port for exit-policy selection.
 	IPv6         bool          // Select an exit whose IPv6 summary permits Port.
 	BuildTimeout time.Duration // Zero means one minute, including guard usability.
@@ -53,7 +54,11 @@ type dialFunc func(context.Context, channel.Target, channel.Options) (transport,
 // Use a single GuardStore owner for the state directory, shared with the
 // directory manager. Call Close even if ctx is eventually canceled.
 func Build(ctx context.Context, s *directory.Snapshot, guards *directory.GuardStore, options Options) (*Circuit, error) {
+	optionsPool := options.ChannelPool
 	return buildSelected(ctx, s, guards, options, func(ctx context.Context, target channel.Target, options channel.Options) (transport, error) {
+		if pool := optionsPool; pool != nil {
+			return pool.Acquire(ctx, target, options)
+		}
 		return channel.Dial(ctx, target, options)
 	})
 }
@@ -85,7 +90,17 @@ func buildSelected(ctx context.Context, s *directory.Snapshot, guards *directory
 	for i, r := range []directory.Relay{p.Guard, p.Middle, p.Exit} {
 		hops[i] = hop{r.Target(), r.NTor()}
 	}
-	c, err := build(ctx, hops, a, options.BuildTimeout, dial, func() bool { return s.Valid(time.Now()) })
+	padding, err := s.LinkPadding()
+	if err != nil {
+		a.Close()
+		return nil, err
+	}
+	paddedDial := func(ctx context.Context, target channel.Target, options channel.Options) (transport, error) {
+		options.Padding = &padding
+		options.PaddingPolicy = guards.LinkPaddingPolicy()
+		return dial(ctx, target, options)
+	}
+	c, err := buildHops(ctx, hops[:], a, options.BuildTimeout, paddedDial, func() bool { return s.Valid(time.Now()) }, false, guards.PaddingBudget())
 	if err != nil {
 		return nil, err
 	}
@@ -97,7 +112,19 @@ func buildSelected(ctx context.Context, s *directory.Snapshot, guards *directory
 // build is also used by protocol tests with explicit test-network pins. There
 // is deliberately no public API that bypasses verified path selection.
 func build(lifetime context.Context, hops [3]hop, attempt guardAttempt, timeout time.Duration, dial dialFunc, valid func() bool) (result *Circuit, err error) {
+	return buildHops(lifetime, hops[:], attempt, timeout, dial, valid, false)
+}
+
+// Only onion path selection enables a non-adjacent repeated entry/endpoint.
+// The relay protocol still forbids A-A and A-B-A on every circuit.
+func buildHops(lifetime context.Context, selected []hop, attempt guardAttempt, timeout time.Duration, dial dialFunc, valid func() bool, onionPath bool, budgets ...*directory.PaddingBudget) (result *Circuit, err error) {
 	defer attempt.Close()
+	if len(selected) != 3 && len(selected) != 4 {
+		return nil, ErrProtocol
+	}
+	var hops [4]hop
+	copy(hops[:], selected)
+	hopCount := len(selected)
 	if timeout == 0 {
 		timeout = time.Minute
 	}
@@ -108,20 +135,23 @@ func build(lifetime context.Context, hops [3]hop, attempt guardAttempt, timeout 
 	}
 	// Reject bad local descriptors before opening a connection or penalizing a
 	// guard. ntor.Start also rejects low-order X25519 public keys.
-	var states [3]*ntor.ClientState
-	var requests [3][ntor.RequestSize]byte
-	for i := 0; i < 3; i++ {
+	var states [4]*ntor.ClientState
+	var requests [4][ntor.RequestSize]byte
+	for i := 0; i < 4; i++ {
+		if i >= hopCount {
+			break
+		}
 		h := hops[i]
 		if h.target.Identity.RSA != h.ntor.Identity || h.target.Identity.Validate() != nil ||
 			!h.target.Address.IsValid() || h.target.Address.Port() == 0 || h.target.Address.Addr().Zone() != "" ||
 			h.target.Address.Addr().IsMulticast() || h.target.Address.Addr().IsUnspecified() {
 			return nil, fmt.Errorf("%w: invalid hop descriptor", ErrProtocol)
 		}
-		for j := 0; j < 3; j++ {
+		for j := 0; j < 4; j++ {
 			if j >= i {
 				break
 			}
-			if hops[j].target.Identity.RSA == h.target.Identity.RSA || hops[j].target.Identity.Ed25519 == h.target.Identity.Ed25519 {
+			if (!onionPath || i-j <= 2) && (hops[j].target.Identity.RSA == h.target.Identity.RSA || hops[j].target.Identity.Ed25519 == h.target.Identity.Ed25519) {
 				return nil, fmt.Errorf("%w: repeated hop", ErrProtocol)
 			}
 		}
@@ -134,7 +164,7 @@ func build(lifetime context.Context, hops [3]hop, attempt guardAttempt, timeout 
 	defer func() {
 		// Parent cancellation is not evidence of guard failure. A locally imposed
 		// build timeout before guard authentication is a failed reachability attempt.
-		if err != nil && !guardAuthenticated && lifetime.Err() == nil {
+		if err != nil && !guardAuthenticated && lifetime.Err() == nil && !errors.Is(err, channel.ErrPoolCapacity) {
 			err = errors.Join(err, attempt.Failure(time.Now(), false))
 		}
 	}()
@@ -144,6 +174,13 @@ func build(lifetime context.Context, hops [3]hop, attempt guardAttempt, timeout 
 		return nil, err
 	}
 	c := newCircuit(ch)
+	if len(budgets) > 0 {
+		c.paddingBudget = budgets[0]
+	}
+	if hopCount == 4 {
+		c.relayEnd = 3
+		c.endHop.Store(3)
+	}
 	defer func() {
 		if err != nil {
 			c.shutdown(err)
@@ -181,7 +218,7 @@ func build(lifetime context.Context, hops [3]hop, attempt guardAttempt, timeout 
 	if err != nil {
 		return nil, err
 	}
-	for i := 1; i < 3; i++ {
+	for i := 1; i < hopCount; i++ {
 		payload, e := cell.EncodeExtend2(cell.Extend2Message{Links: linkSpecs(hops[i].target), HandshakeType: cell.HandshakeNtor, Handshake: requests[i][:]})
 		if e != nil {
 			return nil, e
@@ -204,7 +241,7 @@ func build(lifetime context.Context, hops [3]hop, attempt guardAttempt, timeout 
 		if e != nil {
 			return nil, e
 		}
-		if i == 2 {
+		if i == hopCount-1 {
 			c.binding = keys.Binding
 		}
 		if e = c.crypto.AddHop(keys); e != nil {

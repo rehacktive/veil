@@ -61,6 +61,10 @@ func (d *Dialer) Close() error {
 	d.descriptors.close()
 	p.once.Do(func() { close(p.done) })
 	p.work.Wait()
+	d.intros.work.Wait()
+	if d.channels != nil {
+		_ = d.channels.Close()
+	}
 	<-p.done
 	p.mu.Lock()
 	var dedicated []*ownedConn

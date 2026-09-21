@@ -185,3 +185,78 @@ and [service rendezvous](https://spec.torproject.org/rend-spec/rendezvous-protoc
 The local C Tor 0.4.9.12 source and executable provide an independent peer for
 ESTABLISH_INTRO, descriptor acceptance, client decryption and incoming streams.
 No Tor process or Rust implementation is used by the production host.
+
+## TLS profile provenance — 2026-09-21
+
+The cover-name distribution follows C Tor 0.4.9.12's `tor_tls_new` call to
+`crypto_random_hostname(4, 25, "www.", ".com")`, in
+`src/lib/tls/tortls_openssl.c` and `src/lib/crypt_ops/crypto_rand.c` from the
+verified source release above. Veil independently generates an unbiased length
+and random base32 label with Go's standard cryptographic RNG; no C implementation
+is linked or copied. The modern Tor group preference list is in that same TLS
+source. Veil enables its intersection with the groups implemented by the selected
+Go toolchain, retaining P-256 and X25519 for classical peers. It does not advertise
+P-224 or any unimplemented mechanism just to match a fingerprint.
+
+The TLS implementation remains `crypto/tls` (Go 1.24+), including its protocol
+validation, cipher ordering, key-share generation and HelloRetryRequest handling.
+The before/after measurements used Go 1.27.1 and Tor 0.4.9.12 linked to OpenSSL
+3.6.4 on macOS arm64. See the repeated report summary and limits in VALIDATION.md.
+
+## Client circuit setup padding — 2026-09-21
+
+The protocol follows the Tor Project's
+[circuit-level padding specification](https://spec.torproject.org/padding-spec/circuit-level-padding.html)
+and the verified C Tor 0.4.9.12 release's `src/core/or/circuitpadding_machines.c`,
+`circuitpadding.c` and `src/trunnel/circpad_negotiation.h`. Veil implements only
+the two deployed client-side machines, without a general machine interpreter or
+C runtime dependency. Golden-wire fixtures use independent relay encryption.
+
+Two prose/source discrepancies are explicit: actual C Tor machine identifiers
+are introduction **0** and rendezvous **1**, assigned by registration order;
+the prose negotiation example lists only a generic machine constant **1**.
+The implemented global percentage key is `circpad_global_max_padding_pct`,
+where the specification spells `_percent`; Veil accepts both, using the stricter
+nonzero value. The introduction maximum is ten cells; C Tor's exclusive-upper
+uniform distribution normally produces seven through nine. Rendezvous delays
+sample 0–999 microseconds and actual scheduling can be later.
+
+There is no circuitmux output queue in Veil: encrypted writes own a gate through
+flush. A padding cell is skipped if the gate is busy, so it cannot exceed any
+nonnegative `circpad_max_circ_queued_cells` limit. Introduction retention is a
+fixed ten minutes with a separate bounded capacity. Shared channel lifetime,
+adaptive retirement and full traffic/timing equivalence remain outside this step.
+
+## Shared-channel lifetime and live policy — 2026-09-21
+
+The implementation follows the Tor specifications for
+[connection-level padding](https://spec.torproject.org/padding-spec/connection-level-padding.html),
+[circuit IDs and construction](https://spec.torproject.org/tor-spec/creating-circuits.html)
+and [stream isolation](https://spec.torproject.org/path-spec/stream-isolation.html).
+Pooling occurs below the isolation boundary: circuits retain separate encryption
+and stream state while sharing one pinned guard transport within their owner.
+Direct/bootstrap channel APIs remain available without pooling.
+
+Live timing/disable updates use START with zero bounds when re-enabling padding,
+so the relay uses its own consensus. Client idle retention follows the prose
+specification's `nf_conntimeout_clients` value, default 1,800 seconds, with C Tor's
+60–86,400-second consensus clamp. This is an explicit partial implementation of
+the lifetime policy: C Tor 0.4.9.12's `channelpadding.c` retains predicted/unused
+circuits for a randomized duration and applies an additional roughly 3–4.5-minute
+idle timeout to client channels after the last circuit disappears. Veil does
+not build predicted circuits or reproduce that composite distribution. Its
+sharing and retention are tested for correctness, not traffic indistinguishability.
+
+## Bounded stream control writes — 2026-09-21
+
+The local matched workload exposed a one-cell-per-TLS-write pattern in Veil's
+download acknowledgments. The managed stream writer now drains already-queued
+SENDME/END controls under its existing ordering gate, encrypts each cell normally,
+and submits at most 16 fixed cells in a single transport request. It does not wait
+on a timer, add cover cells or change flow-control thresholds, authenticated
+SENDME contents, relay crypto, padding policy or TLS configuration.
+
+This is an implementation scheduling change, not a new Tor wire format or a port
+of C Tor's scheduler. Standard Go TLS controls record boundaries. The queue bound,
+whole-batch completion and shared-lease cancellation behavior are tested; DATA
+write aggregation and complete traffic equivalence remain outside this step.

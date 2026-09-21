@@ -55,7 +55,8 @@ func (h *Host) publish(ctx context.Context, s *directory.Snapshot, g *generation
 		if err != nil {
 			return &persistentError{err}
 		}
-		raw, err := onion.CreateDescriptor(seed, p.Period, p.Minutes, revision, intros, time.Now())
+		created := time.Now()
+		raw, err := onion.CreateDescriptor(seed, p.Period, p.Minutes, revision, intros, created)
 		clear(seed[:])
 		if err != nil {
 			return err
@@ -73,6 +74,11 @@ func (h *Host) publish(ctx context.Context, s *directory.Snapshot, g *generation
 			if ctx.Err() != nil {
 				return ctx.Err()
 			}
+			// An HSDir may accept a descriptor even if its reply is lost. Retain
+			// advertised keys before the upload, including on partial failure.
+			if expiry := onion.ServiceDescriptorExpiry(created); expiry.After(g.retainUntil) {
+				g.retainUntil = expiry
+			}
 			err = h.upload(ctx, s, target, raw)
 			if err == nil {
 				successes++
@@ -87,7 +93,7 @@ func (h *Host) publish(ctx context.Context, s *directory.Snapshot, g *generation
 	}
 	return errors.Join(failures...)
 }
-func (h *Host) upload(parent context.Context, s *directory.Snapshot, target directory.Relay, raw []byte) error {
+func (h *Host) uploadDescriptor(parent context.Context, s *directory.Snapshot, target directory.Relay, raw []byte) error {
 	ctx, cancel := context.WithTimeout(parent, 45*time.Second)
 	defer cancel()
 	c, err := h.build(ctx, s, &target, circuit.OnionDirectory)

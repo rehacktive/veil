@@ -25,8 +25,10 @@ type Target struct {
 }
 
 type Options struct {
-	HandshakeTimeout time.Duration // Zero means 30 seconds, including TCP/TLS.
-	QueueSize        int           // Per-direction queue; zero means 32. Maximum 1024.
+	HandshakeTimeout time.Duration   // Zero means 30 seconds, including TCP/TLS.
+	QueueSize        int             // Per-direction queue; zero means 32. Maximum 1024.
+	Padding          *PaddingOptions // Nil for directory-only bootstrap channels.
+	PaddingPolicy    *PaddingPolicy  // Optional live consensus policy.
 }
 
 func (o Options) normalized() (Options, error) {
@@ -38,6 +40,13 @@ func (o Options) normalized() (Options, error) {
 	}
 	if o.HandshakeTimeout < 0 || o.QueueSize < 1 || o.QueueSize > 1024 {
 		return Options{}, errors.New("channel: invalid timeout or queue size")
+	}
+	if o.Padding != nil {
+		p := *o.Padding
+		if p.Low < 0 || p.High < p.Low || p.High > time.Minute {
+			return Options{}, errors.New("channel: invalid padding interval")
+		}
+		o.Padding = &p
 	}
 	return o, nil
 }
@@ -66,7 +75,7 @@ func Dial(ctx context.Context, target Target, options Options) (*Channel, error)
 	}
 	hctx, cancel := context.WithTimeout(ctx, options.HandshakeTimeout)
 	defer cancel()
-	raw, err := (&net.Dialer{}).DialContext(hctx, "tcp", target.Address.String())
+	raw, err := dialTCP(hctx, target.Address.String())
 	if err != nil {
 		return nil, fmt.Errorf("channel TCP: %w", err)
 	}
@@ -91,7 +100,7 @@ func connect(lifetime, handshake context.Context, raw net.Conn, target Target, o
 		_ = raw.Close()
 		return nil, err
 	}
-	return newChannel(lifetime, raw, conn, codec, info, options.QueueSize), nil
+	return newPaddedChannel(lifetime, raw, conn, codec, info, options.QueueSize, options.Padding, options.PaddingPolicy), nil
 }
 
 func negotiate(ctx context.Context, raw net.Conn, target Target) (conn *tls.Conn, codec *cell.Codec, info Info, err error) {
@@ -125,13 +134,21 @@ func negotiate(ctx context.Context, raw net.Conn, target Target) (conn *tls.Conn
 			return
 		}
 	}
+	serverName, nameErr := randomServerName()
+	if nameErr != nil {
+		err = fmt.Errorf("channel TLS server name: %w", nameErr)
+		return
+	}
 	conn = tls.Client(raw, &tls.Config{
 		MinVersion: tls.VersionTLS12,
+		// A fresh Tor-shaped cover name, unrelated to the relay/destination.
+		// TCP is already connected to the numeric relay address: no DNS occurs.
+		ServerName: serverName,
 		// Tor authenticates the exact TLS leaf through CERTS after TLS finishes.
 		// The connection is private to this function until torcert.Verify passes.
 		InsecureSkipVerify:     true, // #nosec G402 -- Tor CERTS authenticates this exact TLS leaf against both pinned identities before returning a channel; Web PKI is not Tor's trust model.
 		SessionTicketsDisabled: true,
-		CurvePreferences:       []tls.CurveID{tls.X25519, tls.CurveP256},
+		CurvePreferences:       torTLSGroups(),
 	})
 	if err = conn.HandshakeContext(ctx); err != nil {
 		err = fmt.Errorf("channel TLS: %w", err)

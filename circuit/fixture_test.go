@@ -13,6 +13,7 @@ import (
 	"crypto/sha256"
 	"crypto/sha3"
 	"encoding"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"hash"
@@ -82,8 +83,8 @@ func serverHandshake(private *ecdh.PrivateKey, identity [20]byte, request []byte
 
 type testNetwork struct {
 	mu      sync.Mutex
-	hops    [3]hop
-	secrets [3]*ecdh.PrivateKey
+	hops    []hop
+	secrets []*ecdh.PrivateKey
 	layers  []testLayer
 	frames  chan cell.Cell
 	done    chan struct{}
@@ -99,9 +100,13 @@ type testNetwork struct {
 	blockWrites       bool
 }
 
-func network(t *testing.T) *testNetwork {
+func network(t *testing.T, size ...int) *testNetwork {
 	t.Helper()
-	n := &testNetwork{frames: make(chan cell.Cell, 1024), done: make(chan struct{}), id: 0x80000042}
+	count := 3
+	if len(size) > 0 {
+		count = size[0]
+	}
+	n := &testNetwork{hops: make([]hop, count), secrets: make([]*ecdh.PrivateKey, count), frames: make(chan cell.Cell, 1024), done: make(chan struct{}), id: 0x80000042}
 	for i := range n.hops {
 		key, err := ecdh.X25519().GenerateKey(rand.Reader)
 		if err != nil {
@@ -204,7 +209,7 @@ func (n *testNetwork) Send(ctx context.Context, f cell.Cell) error {
 			return errors.New("bad extension target/framing")
 		}
 		i := len(n.layers)
-		if i >= 3 {
+		if i >= len(n.hops) {
 			return errors.New("extra extension")
 		}
 		ext, err := cell.DecodeExtend2(m.Data)
@@ -212,7 +217,8 @@ func (n *testNetwork) Send(ctx context.Context, f cell.Cell) error {
 			return errors.New("bad EXTEND2")
 		}
 		// Assert the on-wire link specs explicitly, including both identity pins.
-		if len(ext.Links) != 3 || ext.Links[0].Type != cell.LinkIPv4 || !bytes.Equal(ext.Links[0].Data, []byte{byte(i + 1), 1, 2, 3, 0x23, 0x29}) || ext.Links[1].Type != cell.LinkRSAIdentity || !bytes.Equal(ext.Links[1].Data, n.hops[i].target.Identity.RSA[:]) || ext.Links[2].Type != cell.LinkEd25519Identity || !bytes.Equal(ext.Links[2].Data, n.hops[i].target.Identity.Ed25519[:]) {
+		address := binary.BigEndian.AppendUint16(n.hops[i].target.Address.Addr().AsSlice(), n.hops[i].target.Address.Port())
+		if len(ext.Links) != 3 || ext.Links[0].Type != cell.LinkIPv4 || !bytes.Equal(ext.Links[0].Data, address) || ext.Links[1].Type != cell.LinkRSAIdentity || !bytes.Equal(ext.Links[1].Data, n.hops[i].target.Identity.RSA[:]) || ext.Links[2].Type != cell.LinkEd25519Identity || !bytes.Equal(ext.Links[2].Data, n.hops[i].target.Identity.Ed25519[:]) {
 			return errors.New("wrong extension link specs")
 		}
 		return n.handshake(i, ext.Handshake)
@@ -329,7 +335,7 @@ func built(t *testing.T) (*Circuit, *testNetwork) {
 	t.Helper()
 	n := network(t)
 	a := &testAttempt{usable: directory.GuardUsable}
-	c, err := build(context.Background(), n.hops, a, time.Second, n.dial, func() bool { return true })
+	c, err := build(context.Background(), [3]hop(n.hops), a, time.Second, n.dial, func() bool { return true })
 	if err != nil {
 		t.Fatal(err)
 	}

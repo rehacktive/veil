@@ -142,7 +142,7 @@ func TestBuildRejectsProtocolAndAuthenticationFailures(t *testing.T) {
 			n := network(t)
 			test.configure(n)
 			a := &testAttempt{usable: directory.GuardUsable}
-			c, err := build(context.Background(), n.hops, a, time.Second, n.dial, func() bool { return true })
+			c, err := build(context.Background(), [3]hop(n.hops), a, time.Second, n.dial, func() bool { return true })
 			if c != nil || !errors.Is(err, test.want) {
 				t.Fatalf("accepted invalid build: %v %v", c, err)
 			}
@@ -158,7 +158,7 @@ func TestBuildTimeoutCancellationAndGuardUsability(t *testing.T) {
 		n := network(t)
 		n.stall = stall
 		a := &testAttempt{usable: directory.GuardUsable}
-		_, err := build(context.Background(), n.hops, a, 30*time.Millisecond, n.dial, func() bool { return true })
+		_, err := build(context.Background(), [3]hop(n.hops), a, 30*time.Millisecond, n.dial, func() bool { return true })
 		if !errors.Is(err, context.DeadlineExceeded) || (a.failure != 0) != (stall == 1) || a.closed != 1 || n.Err() == nil {
 			t.Fatal(stall, err, a)
 		}
@@ -169,7 +169,7 @@ func TestBuildTimeoutCancellationAndGuardUsability(t *testing.T) {
 		a := &testAttempt{usable: directory.GuardUsable}
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Millisecond)
 		defer cancel()
-		_, err := build(ctx, n.hops, a, time.Second, n.dial, func() bool { return true })
+		_, err := build(ctx, [3]hop(n.hops), a, time.Second, n.dial, func() bool { return true })
 		if !errors.Is(err, context.DeadlineExceeded) || a.failure != 0 || a.closed != 1 {
 			t.Fatal(err, a)
 		}
@@ -188,7 +188,13 @@ func TestBuildTimeoutCancellationAndGuardUsability(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			n := network(t)
 			a := &testAttempt{usable: test.usability, err: test.successErr}
-			_, err := build(context.Background(), n.hops, a, 30*time.Millisecond, n.dial, func() bool { return test.valid })
+			// These cases test post-handshake guard/directory decisions. Let
+			// crypto complete under race-instrumented load before testing them.
+			budget := time.Second
+			if test.usability == directory.GuardWaiting {
+				budget = 200 * time.Millisecond
+			}
+			_, err := build(context.Background(), [3]hop(n.hops), a, budget, n.dial, func() bool { return test.valid })
 			want := test.errorWant
 			if want == nil {
 				want = test.successErr
@@ -333,7 +339,7 @@ func TestLifetimeAndBlockedReceiveClose(t *testing.T) {
 	n := network(t)
 	a := &testAttempt{usable: directory.GuardUsable}
 	ctx, cancel := context.WithCancel(context.Background())
-	c, err := build(ctx, n.hops, a, time.Second, n.dial, func() bool { return true })
+	c, err := build(ctx, [3]hop(n.hops), a, time.Second, n.dial, func() bool { return true })
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -386,15 +392,26 @@ func TestLocalValidationAndIPv6LinkSpecs(t *testing.T) {
 	}
 	for _, edit := range []func(*[3]hop){func(h *[3]hop) { h[1] = h[0] }, func(h *[3]hop) { h[1].ntor.OnionKey = [32]byte{} }, func(h *[3]hop) { h[0].target.Address = netip.AddrPort{} }, func(h *[3]hop) { h[0].ntor.Identity[0] ^= 1 }} {
 		n := network(t)
-		edit(&n.hops)
+		edit((*[3]hop)(n.hops))
 		a := &testAttempt{}
 		called := false
-		_, err := build(context.Background(), n.hops, a, time.Second, func(context.Context, channel.Target, channel.Options) (transport, error) {
+		_, err := build(context.Background(), [3]hop(n.hops), a, time.Second, func(context.Context, channel.Target, channel.Options) (transport, error) {
 			called = true
 			return n, nil
 		}, func() bool { return true })
 		if err == nil || called || a.failure != 0 || a.closed != 1 {
 			t.Fatal(err, called, a)
 		}
+	}
+}
+
+func TestSharedTransportCapacityDoesNotPenalizeGuard(t *testing.T) {
+	n := network(t)
+	a := &testAttempt{usable: directory.GuardUsable}
+	_, err := build(context.Background(), [3]hop(n.hops), a, time.Second, func(context.Context, channel.Target, channel.Options) (transport, error) {
+		return nil, channel.ErrPoolCapacity
+	}, func() bool { return true })
+	if !errors.Is(err, channel.ErrPoolCapacity) || a.failure != 0 || a.success != 0 || a.closed != 1 {
+		t.Fatal("local pool pressure changed guard accounting", err, a)
 	}
 }

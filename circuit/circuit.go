@@ -38,42 +38,53 @@ type Message struct {
 	Tag relaycrypto.Tag
 }
 
-// Circuit owns one authenticated channel exclusively. It is safe for concurrent
-// use; outgoing encryption/write order and incoming decryption order are
+// Circuit owns a dedicated channel or a lease on a shared channel. It is safe
+// for concurrent use; outgoing encryption/write order and incoming decryption order are
 // serialized. Never read from its underlying channel or copy a Circuit.
 type Circuit struct {
-	ch       transport
-	id       uint32
-	path     directory.Path
-	crypto   *relaycrypto.Client
-	early    int
-	sendGate chan struct{}
-	incoming chan Message
-	ctx      context.Context
-	cancel   context.CancelFunc
-	done     chan struct{}
-	once     sync.Once
-	wg       sync.WaitGroup
-	mu       sync.Mutex
-	err      error
-	mode     byte // 1: raw relay API; 2: managed streams
-	streams  *streamMux
-	port     uint16
-	ipv6     bool
-	window   int
-	endHop   atomic.Int32
-	binding  [20]byte      // Final-hop ntor binding; used only for ESTABLISH_INTRO.
-	hs       *onionCircuit // Access under mu; purpose and endpoint are immutable after construction.
+	ch               transport
+	id               uint32
+	path             directory.Path
+	crypto           *relaycrypto.Client
+	early            int
+	sendGate         chan struct{}
+	incoming         chan Message
+	ctx              context.Context
+	cancel           context.CancelFunc
+	done             chan struct{}
+	once             sync.Once
+	wg               sync.WaitGroup
+	mu               sync.Mutex
+	err              error
+	mode             byte // 1: raw relay API; 2: managed streams
+	streams          *streamMux
+	port             uint16
+	ipv6             bool
+	window           int
+	endHop           atomic.Int32
+	relayEnd         int      // Immutable physical endpoint; the service hop follows it.
+	binding          [20]byte // Final-hop ntor binding; used only for ESTABLISH_INTRO.
+	paddingBudget    paddingPolicy
+	paddingSupported bool
+	padding          circuitPadding
+	hs               *onionCircuit // Access under mu; purpose and endpoint are immutable after construction.
 }
 
 func newCircuit(ch transport) *Circuit {
 	ctx, cancel := context.WithCancel(context.Background())
-	c := &Circuit{ch: ch, early: 8, window: 1000, sendGate: make(chan struct{}, 1), incoming: make(chan Message, 32), ctx: ctx, cancel: cancel, done: make(chan struct{})}
+	c := &Circuit{ch: ch, early: 8, window: 1000, relayEnd: 2, sendGate: make(chan struct{}, 1), incoming: make(chan Message, 32), ctx: ctx, cancel: cancel, done: make(chan struct{})}
 	c.endHop.Store(2)
 	return c
 }
 
-func (c *Circuit) Path() directory.Path  { return c.path }
+func (c *Circuit) Path() directory.Path {
+	p := c.path
+	if p.ExtraMiddle != nil {
+		middle := *p.ExtraMiddle
+		p.ExtraMiddle = &middle
+	}
+	return p
+}
 func (c *Circuit) Done() <-chan struct{} { return c.done }
 func (c *Circuit) Err() error            { c.mu.Lock(); defer c.mu.Unlock(); return c.err }
 
@@ -156,7 +167,7 @@ func (c *Circuit) send(ctx context.Context, hop int, m cell.RelayMessage, prepar
 		c.mu.Lock()
 		service := c.hs != nil && c.hs.purpose == OnionServiceRendezvous
 		c.mu.Unlock()
-		if !service || hop != 3 || m.StreamID == 0 {
+		if !service || hop != c.relayEnd+1 || m.StreamID == 0 {
 			return tag, ErrProtocol
 		}
 	case cell.RelayBegin, cell.RelayBeginDir, cell.RelayData, cell.RelayEnd, cell.RelayResolve:
@@ -176,6 +187,11 @@ func (c *Circuit) send(ctx context.Context, hop int, m cell.RelayMessage, prepar
 	case <-c.done:
 		return tag, c.Err()
 	case c.sendGate <- struct{}{}:
+	}
+	if m.Command != cell.RelayDrop && m.Command != cell.RelaySendme {
+		if ch, ok := c.ch.(interface{ MarkUsed() }); ok {
+			ch.MarkUsed()
+		}
 	}
 	started := false
 	defer func() {
@@ -205,29 +221,41 @@ func (c *Circuit) sendRelay(ctx context.Context, hop int, m cell.RelayMessage) (
 }
 
 func (c *Circuit) sendRelayTagged(ctx context.Context, hop int, m cell.RelayMessage, tagged func(relaycrypto.Tag)) (relaycrypto.Tag, error) {
-	body, err := cell.EncodeRelay(m)
-	if err != nil {
-		return relaycrypto.Tag{}, err
-	}
-	command := cell.Relay
-	if m.Command == cell.RelayExtend2 || (hop > 0 && c.early > 0) {
-		if c.early == 0 {
-			return relaycrypto.Tag{}, fmt.Errorf("%w: RELAY_EARLY budget exhausted", ErrProtocol)
-		}
-		c.early--
-		command = cell.RelayEarly
-	}
-	body, tag, err := c.crypto.Encrypt(hop, body)
+	frame, tag, err := c.encryptRelay(hop, m)
 	if err != nil {
 		return relaycrypto.Tag{}, err
 	}
 	if tagged != nil {
 		tagged(tag)
 	}
-	if err := c.ch.Send(ctx, cell.Cell{CircuitID: c.id, Command: command, Payload: body[:]}); err != nil {
+	if err := c.ch.Send(ctx, frame); err != nil {
 		return relaycrypto.Tag{}, err
 	}
 	return tag, nil
+}
+
+// Caller holds sendGate (or exclusively owns the circuit during construction).
+func (c *Circuit) encryptRelay(hop int, m cell.RelayMessage) (cell.Cell, relaycrypto.Tag, error) {
+	body, err := cell.EncodeRelay(m)
+	if err != nil {
+		return cell.Cell{}, relaycrypto.Tag{}, err
+	}
+	command := cell.Relay
+	if m.Command == cell.RelayExtend2 || (hop > 0 && c.early > 0) {
+		if c.early == 0 {
+			return cell.Cell{}, relaycrypto.Tag{}, fmt.Errorf("%w: RELAY_EARLY budget exhausted", ErrProtocol)
+		}
+		c.early--
+		command = cell.RelayEarly
+	}
+	body, tag, err := c.crypto.Encrypt(hop, body)
+	if err != nil {
+		return cell.Cell{}, relaycrypto.Tag{}, err
+	}
+	if m.Command != cell.RelayDrop && c.paddingBudget != nil {
+		c.paddingBudget.NonPadding()
+	}
+	return cell.Cell{CircuitID: c.id, Command: command, Payload: body[:]}, tag, nil
 }
 
 // Receive returns authenticated relay messages from a bounded queue. Canceling
@@ -263,9 +291,6 @@ func (c *Circuit) receiveFrame(ctx context.Context) (cell.Cell, error) {
 		if err != nil {
 			return cell.Cell{}, err
 		}
-		if f.Command == cell.PaddingNegotiate && f.CircuitID == 0 {
-			continue
-		}
 		if f.CircuitID != c.id {
 			return cell.Cell{}, fmt.Errorf("%w: unexpected circuit ID", ErrProtocol)
 		}
@@ -300,6 +325,13 @@ func (c *Circuit) receiveRelay(ctx context.Context) (Message, error) {
 			return Message{}, err
 		}
 		switch m.Command {
+		case cell.RelayPaddingNegotiate:
+			return Message{}, fmt.Errorf("%w: relay attempted padding negotiation", ErrProtocol)
+		case cell.RelayPaddingNegotiated:
+			if err := c.acceptPadding(hop, m); err != nil {
+				return Message{}, err
+			}
+			continue
 		case cell.RelayDrop, cell.RelayExtended2, cell.RelayTruncated:
 			if m.StreamID != 0 {
 				return Message{}, fmt.Errorf("%w: control message on a stream", ErrProtocol)
@@ -311,6 +343,9 @@ func (c *Circuit) receiveRelay(ctx context.Context) (Message, error) {
 				return Message{}, &RemoteError{Hop: hop, Reason: m.Data[0]}
 			}
 			if m.Command == cell.RelayDrop {
+				if err := c.acceptPadding(hop, m); err != nil {
+					return Message{}, err
+				}
 				continue
 			}
 		case cell.RelayConnected, cell.RelayData, cell.RelayEnd, cell.RelayResolved:
@@ -325,13 +360,13 @@ func (c *Circuit) receiveRelay(ctx context.Context) (Message, error) {
 			c.mu.Lock()
 			service := c.hs != nil && c.hs.purpose == OnionServiceRendezvous
 			c.mu.Unlock()
-			if !service || hop != 3 || m.StreamID == 0 {
+			if !service || hop != c.relayEnd+1 || m.StreamID == 0 {
 				return Message{}, ErrProtocol
 			}
 		case cell.RelayBeginDir, cell.RelayExtend, cell.RelayExtended, cell.RelayExtend2, cell.RelayTruncate, cell.RelayResolve:
 			return Message{}, fmt.Errorf("%w: unexpected inbound relay command", ErrProtocol)
 		case cell.RelayIntroEstablished, cell.RelayIntroduce2, cell.RelayRendezvous2, cell.RelayRendezvousEstablished, cell.RelayIntroduceAck:
-			if hop != 2 || m.StreamID != 0 {
+			if hop != c.relayEnd || m.StreamID != 0 {
 				return Message{}, ErrProtocol
 			}
 		default:
@@ -344,7 +379,7 @@ func (c *Circuit) receiveRelay(ctx context.Context) (Message, error) {
 	return Message{}, fmt.Errorf("%w: excess ignored relay cells", ErrProtocol)
 }
 
-// Close is idempotent, destroys the circuit, closes its dedicated channel, and
+// Close is idempotent, destroys the circuit, releases its transport, and
 // joins the receive/lifetime loops. Teardown never waits indefinitely to write.
 func (c *Circuit) Close() error {
 	c.shutdown(ErrClosed)
@@ -371,7 +406,7 @@ func (c *Circuit) shutdown(err error) {
 		var remote *RemoteError
 		reflectDestroy := errors.As(err, &remote) && remote.Hop == -1
 		// Never interleave DESTROY with an in-flight encrypted write. Closing
-		// the dedicated channel tears down the circuit when writing is blocked.
+		// the transport releases this circuit even when its write is blocked.
 		select {
 		case c.sendGate <- struct{}{}:
 			if c.id != 0 && !reflectDestroy {

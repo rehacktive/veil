@@ -1,6 +1,7 @@
 package service
 
 import (
+	"context"
 	"testing"
 	"time"
 	"veil/directory"
@@ -25,7 +26,8 @@ func TestBackendAndResourceBoundaries(t *testing.T) {
 	}
 }
 func TestReplayAndIntroductionFloodBounds(t *testing.T) {
-	g := &generation{cookies: make(map[[20]byte]bool)}
+	g := newGeneration(context.Background(), newIntroductionAdmission(), nil)
+	defer g.close()
 	i := &introduction{clients: make(map[[32]byte]bool)}
 	other := &introduction{clients: make(map[[32]byte]bool)}
 	r := onion.ServiceRequest{ClientKey: [32]byte{1}, Cookie: [20]byte{2}}
@@ -51,14 +53,14 @@ func TestReplayAndIntroductionFloodBounds(t *testing.T) {
 	}
 	now := time.Now()
 	for j := 0; j < 64; j++ {
-		if !g.allowIntroduction(now) {
+		if !g.admission.allow(now) {
 			t.Fatal(j)
 		}
 	}
-	if g.allowIntroduction(now) {
+	if g.admission.allow(now) {
 		t.Fatal("introduction CPU budget not bounded")
 	}
-	if !g.allowIntroduction(now.Add(time.Second)) {
+	if !g.admission.allow(now.Add(time.Second)) {
 		t.Fatal("rate budget did not replenish")
 	}
 }

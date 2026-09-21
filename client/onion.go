@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"veil/cell"
+	"veil/channel"
 	"veil/circuit"
 	"veil/directory"
 	"veil/internal/diagnostics"
@@ -72,7 +73,7 @@ func (d *Dialer) buildOnion(life, setup context.Context, guards *directory.Guard
 			}
 			diagnostics.Log(setup, d.options.Logger, "onion_descriptor_fetch", "hsdir", target.Address().String())
 			request, cancel := context.WithTimeout(setup, 30*time.Second)
-			raw, e := fetchOnionDescriptor(request, snapshot, guards, target, blinded, d.options.BuildTimeout)
+			raw, e := fetchOnionDescriptor(request, snapshot, guards, target, blinded, d.options.BuildTimeout, d.channels)
 			cancel()
 			if e != nil {
 				diagnostics.Log(setup, d.options.Logger, "onion_descriptor_fetch_failed", "error", e)
@@ -134,7 +135,7 @@ func (d *Dialer) buildOnion(life, setup context.Context, guards *directory.Guard
 			continue
 		}
 		diagnostics.Log(setup, d.options.Logger, "onion_introduction", "relay", target.Address().String())
-		c, e := connectOnion(life, setup, snapshot, guards, target, intro, sub, host, port, d.options.BuildTimeout)
+		c, e := d.connectOnion(life, setup, snapshot, guards, target, intro, sub, host, port, d.options.BuildTimeout)
 		if e == nil {
 			diagnostics.Log(setup, d.options.Logger, "onion_rendezvous_ready", "exit", "none")
 			return c, nil
@@ -169,8 +170,8 @@ func introductionRelay(s *directory.Snapshot, intro onion.Introduction) (directo
 	return r, nil
 }
 
-func fetchOnionDescriptor(ctx context.Context, s *directory.Snapshot, g *directory.GuardStore, target directory.Relay, blinded [32]byte, timeout time.Duration) ([]byte, error) {
-	c, err := circuit.BuildInternal(ctx, s, g, &target, circuit.OnionDirectory, timeout)
+func fetchOnionDescriptor(ctx context.Context, s *directory.Snapshot, g *directory.GuardStore, target directory.Relay, blinded [32]byte, timeout time.Duration, pools ...*channel.Pool) ([]byte, error) {
+	c, err := circuit.BuildInternal(ctx, s, g, &target, circuit.OnionDirectory, timeout, pools...)
 	if err != nil {
 		return nil, err
 	}
@@ -220,7 +221,17 @@ func fetchOnionDescriptor(ctx context.Context, s *directory.Snapshot, g *directo
 	return b, nil
 }
 
-func connectOnion(life, setup context.Context, s *directory.Snapshot, g *directory.GuardStore, target directory.Relay, intro onion.Introduction, sub [32]byte, host string, port uint16, timeout time.Duration) (_ streamCircuit, result error) {
+func (d *Dialer) connectOnion(life, setup context.Context, s *directory.Snapshot, g *directory.GuardStore, target directory.Relay, intro onion.Introduction, sub [32]byte, host string, port uint16, timeout time.Duration) (_ streamCircuit, result error) {
+	release, err := d.intros.reserve(setup, d.lifetime)
+	if err != nil {
+		return nil, err
+	}
+	retained := false
+	defer func() {
+		if !retained {
+			release()
+		}
+	}()
 	ctx, cancel := context.WithCancel(life)
 	keep := false
 	defer func() {
@@ -228,7 +239,7 @@ func connectOnion(life, setup context.Context, s *directory.Snapshot, g *directo
 			cancel()
 		}
 	}()
-	rend, err := circuit.BuildInternal(ctx, s, g, nil, circuit.OnionRendezvous, timeout)
+	rend, err := circuit.BuildInternal(ctx, s, g, nil, circuit.OnionRendezvous, timeout, d.channels)
 	if err != nil {
 		return nil, err
 	}
@@ -273,12 +284,28 @@ func connectOnion(life, setup context.Context, s *directory.Snapshot, g *directo
 	if err != nil {
 		return nil, err
 	}
-	ic, err := circuit.BuildInternal(ctx, s, g, &target, circuit.OnionIntroduction, timeout)
+	// The introduction belongs to the dialer after its exchange, independently
+	// of the rendezvous stream/attempt. During setup, cancellation still applies.
+	introLife, introCancel := context.WithCancel(d.lifetime)
+	stopIntroSetup := context.AfterFunc(setup, introCancel)
+	defer func() {
+		stopIntroSetup()
+		if !retained {
+			introCancel()
+		}
+	}()
+	ic, err := circuit.BuildInternal(introLife, s, g, &target, circuit.OnionIntroduction, timeout, d.channels)
 	if err != nil {
 		return nil, err
 	}
 	err = ic.Introduce(setup, payload)
-	closeErr := ic.Close()
+	var closeErr error
+	if stopIntroSetup() && ic.PaddingStats().Started && ic.Err() == nil {
+		d.intros.hold(d.lifetime, ic, introCancel, release, introductionRetention)
+		retained = true
+	} else {
+		closeErr = ic.Close()
+	}
 	if err != nil || closeErr != nil {
 		return nil, fmt.Errorf("introduction exchange: %w", errors.Join(err, closeErr))
 	}

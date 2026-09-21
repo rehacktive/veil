@@ -176,16 +176,16 @@ func TestListenerCloseCancelsPendingHandshakeWhileDraining(t *testing.T) {
 	waitListener(t, l.Done())
 }
 
-func TestListenerGenerationCancellationRejectsPendingStream(t *testing.T) {
+func TestListenerCircuitCancellationRejectsPendingStream(t *testing.T) {
 	l, ctx, _ := testListener(t)
-	generation, cancel := context.WithCancel(ctx)
-	peer, served := offerPipe(t, l, generation)
+	circuitCtx, cancel := context.WithCancel(ctx)
+	peer, served := offerPipe(t, l, circuitCtx)
 	cancel()
 	waitListener(t, served)
 	if _, err := peer.Read(make([]byte, 1)); !errors.Is(err, io.EOF) {
 		t.Fatal(err)
 	}
-	// The listener remains available for a stream from a replacement generation.
+	// The listener remains available for a stream from a replacement circuit.
 	_, replacement := offerPipe(t, l, ctx)
 	c, err := l.Accept()
 	if err != nil {

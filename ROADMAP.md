@@ -69,7 +69,12 @@ C Tor 0.4.9.12 interoperability passed for four concurrent 2 MiB round trips, ex
 - [x] Add explicit `-debug` terminal diagnostics for proxy lifecycle, routing and exit relays; keep normal proxy operation quiet.
 - [x] Add explicit SOCKS token isolation, destination/family separation and bounded circuit reuse/rotation.
 - [ ] Add mature adaptive circuit policy and stream retry policy.
-- [ ] Implement applicable link/circuit padding and other privacy requirements for supported client behavior.
+- [x] Schedule consensus-controlled idle padding on application guard links, negotiate START/STOP and reject relay attempts to control client padding.
+- [x] Add client onion circuit setup padding, authenticated negotiation, shared consensus limits and bounded ten-minute introduction retention.
+- [x] Share and retain guard channels per client/host, isolate circuit teardown/queues, and apply live verified padding and idle-retention policy.
+- [x] Compare matched small/burst/2 MiB onion workloads and one-minute inactivity against C Tor, recording TLS metadata across three pairs.
+- [x] Batch already-queued stream control cells without a delay timer, preserving encrypted order, write completion and shared-channel cancellation semantics.
+- [ ] Extend matched traffic comparisons to shared-channel failure, long idle periods and public-network conditions; investigate observed TLS record size/timing differences.
 - [x] End-to-end private-network curl checks, token negotiation, large HTTP transfers, SOCKS parser fuzzing, race tests, and resource-limit/cleanup tests.
 - [ ] Broaden protocol differential tests, sustained fuzzing, and independent security review.
 
@@ -80,7 +85,7 @@ The `make proxy-demo` launcher builds a private localhost network and prints a w
 ## 6. V3 onion client — public services implemented
 
 - [x] Validate v3 addresses and derive period-specific blinded keys/subcredentials.
-- [x] Select consensus HSDirs and fetch descriptors through guarded three-hop BEGIN_DIR circuits.
+- [x] Select consensus HSDirs and fetch descriptors through guarded four-hop Vanguards-Lite BEGIN_DIR circuits.
 - [x] Verify descriptor/certificate signatures, expiry and introduction key bindings; authenticate both encryption layers.
 - [x] Establish introductions and hs-ntor rendezvous with fresh keys/cookies, and install the AES-256/SHA3 service hop.
 - [x] Route SOCKS5 and Go client onion requests without exit/DNS fallback, with bounded setup and cleanup.
@@ -117,9 +122,25 @@ and remaining limits are recorded in VALIDATION.md and README.md.
 - [x] Verify private C Tor client interoperability: HTTP, concurrent multi-megabyte downloads, unmapped-port rejection and clean shutdown.
 - [x] Verify public C Tor client interoperability: HTTP, three concurrent 2.4 MB downloads and unmapped-port rejection. Fix fresh-bootstrap and mandatory-endpoint path selection failures.
 - [ ] Improve partial-publication readiness reporting and verify long-running public hosting/rotation.
-- [ ] Add seamless introduction replacement that preserves active rendezvous streams.
-- [ ] Add restricted discovery, PoW defenses, vanguards and broader hosting parity.
+- [x] Preserve active rendezvous circuits and streams across introduction rotation and recovery, within host-wide resource and lifetime limits.
+- [x] Retain advertised introduction generations through certificate expiry; verify new connections with cached and fresh descriptors, partial publication and lost upload replies within bounded shared resources.
+- [x] Enable Vanguards-Lite for onion client and hosting: shared bounded L2 pool, signed lifetime/count parameters, endpoint-independent guards and three/four-relay paths.
+- [ ] Add restricted discovery, PoW defenses, full Vanguards and broader hosting parity.
+- [x] Add a reproducible local TLS fingerprint comparison with C Tor and record observed differences.
+- [x] Repeat TLS captures, separate stable/variable fields, add fresh cover SNI and enable implemented hybrid groups without replacing the standard TLS engine.
+- [ ] Resolve remaining ClientHello/record distinguishers; evaluate a maintained custom TLS engine before claiming a Tor-compatible wire profile. Compare matched workloads, packet timing/lengths, channel reuse and circuit setup against reference clients.
+- [ ] Obtain independent review; self-review and automated checks do not satisfy this requirement.
 
 ## Later parity work
+
+### Deferred: geographic exit selection
+
+- [ ] Add an opt-in exit-country filter for public internet connections, keeping
+  automatic selection as the default. Use a local, updateable GeoIP database,
+  weighted selection among eligible exits, existing isolation/path checks and an
+  explicit error when the requested country has no compatible exit. Apply policy
+  changes to new connections without interrupting active streams. Onion service
+  connections have no exit and are outside this feature. Schedule this after the
+  vanguards, padding and traffic-fingerprint protection work.
 
 ntor-v3 and newer relay cryptography, additional onion client and hosting features, bridges and pluggable transports, advanced congestion control, RPC, and relay/directory-authority operation are separate milestones. The initial client stages do not claim feature parity with the full Arti workspace.

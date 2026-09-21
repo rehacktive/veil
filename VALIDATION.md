@@ -1,5 +1,339 @@
 # Veil 0.13 native onion hosting validation
 
+## Bounded control-cell batching — 2026-09-21
+
+The managed stream writer now groups already-queued SENDME/END controls from
+one circuit, up to 16 fixed cells, with no batching timer. The send gate covers
+filtering retired-stream ACKs, ordered encryption and whole-batch transport
+completion. Channel/lease APIs validate and copy every cell before queueing;
+the fixed-cell batch bound limits each request to 8,224 plaintext bytes. Standard
+Go TLS still chooses record boundaries. DATA writes and padding policy are
+unchanged.
+
+Validation passed on Go 1.27.1:
+
+- Full `go test -race ./...`, ordinary and `veiltraffic`-tagged `go vet ./...`.
+- Default gosec: **68 production files, zero findings, 19 annotations**.
+- Seven Python metadata/measurement tests.
+- New transport fixtures verify all-or-nothing validation before queueing,
+  one write for a prepared batch, no early success after only its first cell,
+  partial-write failure and rejection of batches containing another lease's ID.
+- A canceled lease whose batch has already partially written lets the complete
+  batch finish, then sends DESTROY; a sibling remains usable on the same channel.
+- Independent relay cipher fixtures verify ordered decryption/digests across
+  batches, the 16-control drain bound, retired-stream ACK filtering, immediate
+  single-control flushing, harmless pre-encryption cancellation and circuit
+  failure after an indeterminate encrypted batch write.
+
+Three repeated Veil download trials now produce **118–122 outbound TLS records**
+(median 120), versus 128 in every earlier trial: a **6.25% median reduction**.
+Each trial includes 6–10 records with 1,045-byte payloads; the remaining records
+have 531-byte payloads. Previously all outbound download records were 531 bytes.
+The [repeated matched comparison](reports/workload_batch_2026-09-21.md) records
+the full effect against the previous baseline and fresh C Tor samples.
+All 36 measured requests passed byte-for-byte validation without measured-phase
+retries. One initial Veil warmup was retried. Fresh C Tor trials produced 106–115
+outbound download records (median 108); Veil's median download duration remained
+about 158 ms locally. Every saved metric was recomputed from the archived traces.
+Batching is a transport scheduling change, not evidence of anonymity or a full
+implementation of C Tor's output scheduler. The original measurements below
+remain a historical baseline.
+
+## Matched application traffic comparison — 2026-09-21
+
+Three pairs of fresh Veil and C Tor clients completed identical workloads against
+one C Tor onion service on five private loopback relays. Each trial used the same
+guard and SOCKS isolation scope, active Vanguards-Lite, warmup plus five seconds
+of settling, one 4 KiB request, four 4 KiB requests with 250 ms gaps, a 2 MiB
+download and sixty seconds of application inactivity. All **36 measured requests**
+passed exact response validation without retries. The first Veil warmup failed
+once before succeeding; preparation is excluded from matched metrics, and the
+different circuit age is a possible maintenance-traffic confounder.
+
+Builds: Go 1.27.1 on macOS arm64, without race instrumentation for measurement;
+C Tor 0.4.9.12 with OpenSSL 3.6.4. Both clients traverse the same kind of local
+SOCKS metadata tap. Veil's route exists only under the `veiltraffic` build tag
+and accepts only loopback targets/taps; normal TLS and Tor authentication remain
+unchanged. No production option enables this route.
+
+| Observed metric | Veil | C Tor |
+| --- | --- | --- |
+| Outbound TLS payload lengths during 2 MiB download | 531 bytes only | 531, 1,045 and 1,559 bytes |
+| Outbound records during download, per trial | 128 | 95–110 |
+| Inbound TLS bytes during download, median | 2,195,040 | 2,195,128 |
+| Outbound records during 60-second inactivity | 8–10 | 18–19 |
+| Guard channels still open at end | 1 in all trials | 1 in all trials |
+| New guard connections during measured phases | 0 | 0 |
+
+ClientHello cipher ordering, extensions, groups, key shares and signature
+algorithms remain different. Inactivity records include encrypted protocol
+maintenance and cannot be classified as pure padding. Record completion times
+are observed at the proxy; these are not IP packets or Tor cell counts. Local
+buffering and the observer affect timing. Open channels are right-censored;
+their full lifetime, long idle periods and failure recovery were not measured.
+Three local pairs do not establish anonymity or statistical indistinguishability.
+
+The [readable comparison](reports/workload_2026-09-21.md),
+[summary JSON](reports/workload_2026-09-21.json) and
+[compressed metadata traces](reports/workload_2026-09-21.traces.json.gz) preserve
+the method, build hash, per-trial data and limitations. Every phase metric was
+recomputed from the archive and checked against the summary; application byte
+counts match across implementations. The observer saves no record bodies,
+onion names, SNI values, keys or application payloads.
+
+Measurement-tool checks passed: seven Python tests (fragmentation, redaction,
+record bounds, phase boundaries and guard filtering included), normal channel
+tests, channel race tests with `veiltraffic`, normal and tagged `go vet ./...`.
+Default gosec reports **67 production files, zero findings, 19 annotations**.
+Reproduce with `scripts/compare_workload.py` as documented in README. Earlier
+validation sections below record the state at their respective milestones.
+
+## Shared guard channels and live policy — 2026-09-21
+
+Clients and onion hosts now share application guard TLS transports within each
+owner. Bootstrap links remain separate. Circuit isolation and the prior
+ten-minute introduction retention remain intact; idle transports are retained
+and padded under live signed consensus policy.
+
+Validation passed on Go 1.27.1:
+
+- Full `go test -race ./...` and `go vet ./...`.
+- Default gosec: **66 production files, zero findings, 19 unchanged annotations**.
+- Multiplexing fixtures verify independent queues/IDs, closing one lease while
+  another remains usable, reuse after idle, changed identity pins, unknown IDs,
+  physical failure propagation, resource caps, coalesced handshakes, canceled
+  waiters and pool shutdown joining its leases.
+- A slow circuit overflowing its 1,024-cell queue leaves a sibling usable.
+  A separate case discards a complete 1,000-cell window for a retired circuit
+  without closing the shared channel. A partially written cell is completed in
+  order before DESTROY after lease cancellation, then a sibling successfully
+  writes over the same transport.
+- Live policy fixtures verify disable/resume/expiry, sticky usage activation,
+  bounded coalesced updates and changed idle-retention settings. Directory
+  tests verify `nf_conntimeout_clients` defaults and 60–86,400-second clamping.
+- Private C Tor 0.4.9.12 suite under the race detector: **48.04 seconds** after
+  bootstrap (forwarding **39.02 s**, listener **9.02 s**). Test-only ownership
+  inspection observed one client guard channel with one retained introduction,
+  and one host guard channel with four live circuit leases, in both scenarios.
+  Native 2,340,000-byte downloads, concurrent C Tor downloads, actual circuit
+  padding, introduction rotation/failure, cached/fresh descriptors and lost
+  publication replies passed. One initial service request timed out during
+  publication/bootstrap and the existing bounded setup retry succeeded.
+
+Production traffic shaping and independent review remain open. Idle expiry uses
+the consensus duration directly; this is not C Tor's complete predicted-circuit
+and randomized lifetime policy. Real thirty-minute idle periods and byte/timing
+distributions have not been measured in the private-network run; shortened
+unit-test timers cover expiry. Earlier sections below are historical milestones.
+
+## Client onion circuit padding — 2026-09-21
+
+Added authenticated setup negotiation with the second physical relay for client
+introduction and rendezvous circuits. Introduction circuits are retained for ten
+minutes after the exchange, separately bounded by `MaxCircuits`, and survive
+closure of the rendezvous stream. This does not alter service introduction-point
+rotation or established stream lifetimes.
+
+Validation:
+
+- Independent relay-crypto fixtures check exact negotiation bytes, three/four-hop
+  targets, introduction ACK before padding ACK, nine cover cells followed by STOP,
+  and rendezvous cover traffic before acknowledgment.
+- Negative fixtures cover malformed/unsolicited controls, wrong hops/streams,
+  version/machine/response errors, duplicate ACKs, excess cover cells and cells
+  after STOP/rejection. Counter mismatches are ignored; legitimate rejection and
+  either machine's STOP are accepted.
+- Policy tests check authenticated capability, disabled/reduced/expired policy,
+  signed bounds, both global-percentage parameter spellings, persistent shared
+  accounting, budget exhaustion, busy writers, cancellation and one-cell limits.
+- Retention tests check setup cancellation after transfer of ownership, capacity
+  backpressure without eviction, expiry, peer failure, idempotent release and
+  dialer shutdown joining retained work.
+- Full `go test -race ./...`, `go vet ./...` and default gosec pass: **64 production
+  files, zero findings, 19 unchanged annotations**. A preexisting post-handshake
+  directory-expiry test initially timed out at 30 ms under concurrent race/live
+  test load. Its non-timeout cases now allow one second for cryptographic setup;
+  the assertions and separate timeout tests remain intact.
+- Private C Tor 0.4.9.12 suite under the race detector: **36.57 seconds** after
+  bootstrap (forwarding **28.28 s**, listener **8.29 s**). Both scenarios observed
+  rendezvous START acknowledgment, one outgoing and one incoming cover cell.
+  Introductions received respectively **7 and 9** cover cells, acknowledged STOP
+  and remained owned after the HTTP stream closed. Native 2,340,000-byte downloads,
+  concurrent C Tor clients, introduction rotation/failure, cached/fresh descriptors
+  and lost publication replies all passed.
+
+The private C Tor integration additionally asserts actual padding acknowledgment,
+cover-cell counts and retained lifetime after HTTP close, rather than inferring
+padding success from a successful download. It uses test-only inspection helpers
+absent from production builds. Full ten-minute retention is unit-tested with a
+shortened timer; the live suite checks continued ownership after stream close.
+
+Traffic classification, inter-arrival timing, application volume, shared channel
+retention and an independent privacy/security review remain unvalidated. The
+following sections are historical results from earlier steps.
+
+## Repeated TLS measurement and configuration correction — 2026-09-21
+
+Two independent batches each captured eight Veil and eight C Tor connections to
+a temporary local relay. Builds: Veil with Go 1.27.1, C Tor 0.4.9.12 linked with
+OpenSSL 3.6.4, macOS arm64. The parser now records SNI presence/length/shape and
+key-share group/length metadata while omitting the values. Report schema 2
+separates stable-in-sample fields from variable fields and length histograms.
+
+| First outbound TLS record payload | Before | After |
+| --- | --- | --- |
+| Veil | 264 bytes (8/8) | 1,510–1,526 bytes |
+| C Tor reference | 1,539–1,559 bytes | 1,541–1,560 bytes |
+
+Before, SNI was absent and only X25519/P-256 were offered by Veil. After, every
+sample uses a Tor-shaped fresh cover SNI and offers implemented hybrid groups.
+SNI length varies in both clients. Stable differences remain in cipher suites,
+extensions, signature algorithms, groups and key shares. These sample size ranges
+still do not overlap. This is a configuration improvement and useful diagnostic
+evidence, not successful traffic indistinguishability. The compact summary is
+[channel/testdata/tls_comparison_2026-09-21.json](channel/testdata/tls_comparison_2026-09-21.json).
+Generate complete traces with the README comparison command.
+
+Validation passed:
+
+- Full `go test -race ./...` and `go vet ./...` on Go 1.27.1.
+- `go test ./channel` on Go 1.24.13, exercising the older-toolchain group list.
+- Default gosec: **61 production files, zero findings, 19 unchanged annotations**.
+- Four Python parser/summary tests: fragmentation, truncation and resource bounds,
+  SNI/key-share metadata without values, and stable-versus-variable aggregation.
+- Real TCP TLS fixtures restricted to TLS 1.2/P-256, TLS 1.3/X25519,
+  TLS 1.3/P-256 (HelloRetryRequest) and TLS 1.3/X25519MLKEM768. TLS session
+  resumption remains disabled and relay identity is checked independently of SNI.
+- Live C Tor link-5/TLS-1.3 handshake, including rejection of wrong RSA/Ed25519 pins.
+- Private native/C Tor onion suite under the race detector: **27.04 seconds**
+  after bootstrap (forwarding **17.89 s**, listener **9.15 s**), including native
+  client transfers of 2,340,000 bytes, concurrent C Tor downloads, padding,
+  cached/fresh descriptors, lost upload replies, rotation and active-stream survival.
+
+The initial P-256 retry test exposed a limitation of zero-buffer `net.Pipe`: both
+TLS endpoints can block writing compatibility CCS before reading. The dedicated
+profile test uses real loopback TCP and exercises the full public `channel.Dial`
+path. Production authentication, TLS engine and minimum TLS version were not
+weakened to make that test pass. Earlier sections below are historical results.
+
+## Vanguards-Lite, guard-link padding and TLS comparison — 2026-09-21
+
+Native onion construction now uses Vanguards-Lite: a shared, memory-only L2 set
+(default four Fast/Stable relays), signed count/lifetime parameters and
+endpoint-independent entry guards. Client rendezvous has three physical relays;
+HSDir, introduction and service rendezvous have four. A separate virtual service
+hop is installed once, after hs-ntor authentication. Unit tests verify sticky
+membership across 100 endpoint changes, expiry/flag replacement, restart behavior,
+no unrestricted fallback, allowed A-B-C-A paths, rejection of A-A/A-B-A before
+network activity, and unchanged clearnet family/subnet restrictions.
+
+Guard channels now send idle link padding with cryptographic max-of-two random
+timeouts and verified consensus bounds. Tests cover START/STOP, deferred user
+activation, no padding on directory-only bootstrap, outbound timer reset,
+inbound traffic not suppressing padding, distribution/bounds and shutdown while
+a padding write is blocked. Relay-originated padding negotiation is rejected.
+The complete race suite, follow-up circuit/channel/directory regression tests,
+`go vet ./...`, and gosec passed. Gosec reports **59 production files, zero
+findings, zero loading errors and 19 unchanged annotations**.
+
+The private C Tor 0.4.9.12 hosting harness uses the production Vanguards selector,
+not explicit test hops. Its temporary authority assigns Stable flags, a single
+entry guard and signed nonzero bandwidths; relay bandwidth history is seeded
+only inside the temporary network because a single authority cannot provide
+Tor's required three measured-bandwidth votes. Existing cached/fresh-descriptor,
+lost upload acknowledgment, introduction failure, retirement and ongoing-stream
+checks pass in forwarding and listener modes. An additional native Veil client
+fetches and verifies **2,340,000 bytes** through native HSDir/introduction/
+rendezvous construction in both modes. The final race-enabled test body passed
+in **56.13 seconds** (forwarding **47.86 s**, listener **8.27 s**) after bootstrap.
+Reproduce with `make service-check`.
+
+The local TLS comparison command in README.md captured Veil's authenticated
+channel check and a C Tor bridge client's connection to the same local relay.
+The ClientHello structure **differs** in cipher suites, extension list/order,
+supported groups, signature algorithms and SNI presence. The first outbound TLS
+record payload measured **264 bytes** for Veil and **1,558 bytes** for this C Tor
+build. The sample is stored in
+[channel/testdata/traffic_fingerprint_2026-09-21.json](channel/testdata/traffic_fingerprint_2026-09-21.json).
+The parser tests handle TCP/TLS fragmentation, truncation, bounds and omission of
+randoms, names and session IDs. Run them with
+`python3 -m unittest discover -s scripts -p 'test_traffic_fingerprint.py'`.
+
+These are local interoperability and distinguisher measurements. Aggregate
+record counts/timing have different post-handshake workloads and are not parity
+metrics. Circuit setup padding, shared/retained channels, live consensus updates
+for existing padding timers, full Vanguards, matched-workload traffic analysis
+and independent review remain open. Older results below describe earlier code.
+
+## Overlapping introduction generations — 2026-09-21
+
+The private harness now runs two independent C Tor clients with separate
+descriptor caches. Both forwarding and listener hosting passed under the race
+detector, with this sequence:
+
+- Receive the beginning of an HTTP response and keep that same stream open.
+- Trigger introduction rotation and block all replacement descriptor uploads.
+  Assert that the old introduction circuits remain open, then successfully open
+  a new rendezvous from the original C Tor client using a new SOCKS isolation
+  scope and the old descriptor.
+- Release publication, but report every successful upload as a lost HSDir
+  acknowledgment. Confirm that the host reports incomplete publication. The
+  second C Tor client, which has never requested this onion address, discovers
+  the uploaded replacement and successfully connects.
+- Fail one replacement introduction circuit. Verify that another generation
+  starts and that the second C Tor client can open another isolated connection.
+- Advance retirement callbacks to simulate certificate expiry. Verify closure
+  of the retained introduction circuits and successful completion of the
+  original response, including **2,340,000 bytes** checked exactly, without curl
+  retry or reconnection.
+- Shut down cleanly, joining readers and rendezvous across retained generations.
+
+The test body passed in **35.36 seconds** (forwarding **27.65 s**, listener
+**7.70 s**) after private-network bootstrap. The existing HTTP, concurrent bulk
+transfer and unmapped-port rejection checks also passed. Reproduce with
+`make service-check`.
+
+Offline regression tests cover shared replay detection and rate limiting across
+generations, expiry/dead-reader pruning, preservation of unexpired history,
+idempotent history cleanup and the signed certificate's absolute expiry for
+late-fetched descriptors. `go test -race ./... -timeout=120s`, `go vet ./...`
+and gosec passed; gosec reports **56 production files, zero issues**, and the
+unchanged **19** protocol annotations.
+
+Retention is bounded to four generations (12 introduction circuits); repeated
+failures can postpone further replacement until capacity becomes available.
+This is controlled private-network coverage, not long-running public-network
+availability or anonymity validation. Padding, vanguards and independent review
+remain open.
+
+## Introduction rotation follow-up — 2026-09-21
+
+The initial rotation fix made rendezvous circuits belong to the host rather than an introduction
+generation. The private C Tor harness checks both TCP forwarding and the native
+Go listener with the race detector enabled:
+
+- Start an HTTP response and receive its first bytes through C Tor.
+- Trigger the actual introduction rotation timer without waiting two hours.
+- Keep the response open while the old introduction circuits close and three
+  fresh introduction circuits are established.
+- Close one of those new introduction circuits to force recovery; verify another
+  replacement generation starts and the failed generation closes.
+- Resume the original HTTP response and verify the remaining **2,340,000 bytes**
+  exactly. Curl does not retry or reconnect the transfer.
+- Shut down and join hosting workers, including rendezvous from retired
+  generations. Existing HTTP, concurrent download and port-rejection checks pass.
+
+The test body passed in **14.66 seconds** (forwarding **7.13 s**, listener
+**7.52 s**) after private-network bootstrap. `go test -race ./... -timeout=120s`
+and `go vet ./...` also passed. Reproduce with `make service-check`.
+
+This verifies established-stream continuity during controlled local rotation and
+failure. It does not verify uninterrupted discovery by new clients, overlapping
+introduction generations, or long-running public-network availability. Circuit
+lifetime limits still apply; padding, vanguards and anonymity review remain open.
+
+## Initial hosting validation
+
 Run on 2026-09-21, macOS arm64, Go 1.27.1, independent peer C Tor 0.4.9.12.
 
 - `go test -race ./... -timeout=120s`: all packages passed.

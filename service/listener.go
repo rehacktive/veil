@@ -39,8 +39,8 @@ func (a onionAddr) String() string  { return string(a) }
 // Listen returns before descriptor publication; Accept waits for incoming streams.
 // MaxStreams bounds pending and accepted streams together. IdleTimeout applies
 // only to forwarding: applications set deadlines on accepted connections.
-// Existing hosting limits, including circuit lifetime and disruptive introduction
-// rotation, also apply to listener connections.
+// Circuit lifetime limits also apply to listener connections. Introduction
+// rotation and recovery preserve existing rendezvous circuits and their streams.
 func Listen(ctx context.Context, manager *directory.Manager, guards *directory.GuardStore, identity *directory.ServiceIdentity, options Options) (*Listener, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err

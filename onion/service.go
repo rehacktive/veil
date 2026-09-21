@@ -229,7 +229,7 @@ func CreateDescriptor(seed [32]byte, period, minutes, revision uint64, intros []
 	defer clear(signing)
 	var signer [32]byte
 	copy(signer[:], pub)
-	expiry := now.Add(4 * time.Hour)
+	expiry := ServiceDescriptorExpiry(now)
 	cert, err := certificate(8, signer, blinded, expiry, func(b []byte) []byte { return signExpanded(scalar, prefix[:32], blinded, b) })
 	if err != nil {
 		return nil, err
@@ -303,6 +303,14 @@ func CreateDescriptor(seed [32]byte, period, minutes, revision uint64, intros []
 		return nil, ErrDescriptor
 	}
 	return result, nil
+}
+
+// ServiceDescriptorExpiry is the absolute certificate expiry used by
+// CreateDescriptor. A client fetching a cached descriptor later can still use
+// its introduction points until this time, irrespective of newer revisions.
+// Tor certificate times are rounded up to whole Unix hours.
+func ServiceDescriptorExpiry(created time.Time) time.Time {
+	return time.Unix(((created.Add(4*time.Hour).Unix()+3599)/3600)*3600, 0)
 }
 
 func encryptLayer(plain []byte, blinded, sub [32]byte, revision uint64, label string, pad bool) ([]byte, error) {

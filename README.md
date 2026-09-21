@@ -66,6 +66,138 @@ This remains an experimental interoperability client: padding, traffic fingerpri
 parity and independent privacy review are incomplete. A normal browser configured
 with this proxy does not provide Tor Browser's privacy protections.
 
+## Privacy protections and limits
+
+Vanguards-Lite is enabled for native onion client and hosting circuits. A shared
+second-layer set contains four Fast/Stable relays by default, selected by verified
+middle bandwidth weights. Membership does not change with requested rendezvous
+endpoints or circuit failures. Entry guards retain their existing persistent
+state; the Lite second layer is memory-only and resets on process restart.
+Expired, removed or no-longer-Fast/Stable members are replaced. The current
+[Vanguards-Lite specification](https://spec.torproject.org/vanguards-spec/vanguards-lite.html)
+defines default lifetimes as the maximum of two uniform 1–22 day samples; signed
+consensus parameters override the bounds. This follows the current specification,
+not C Tor 0.4.9.12's older default lifetime distribution.
+
+Client rendezvous uses `guard → L2 → rendezvous`. HSDir, introduction and
+service-side rendezvous use `guard → L2 → middle → endpoint`. Onion paths relax
+family/subnet exclusions as required by
+[Vanguards path construction](https://spec.torproject.org/vanguards-spec/path-construction.html)
+so an adversarial endpoint cannot force entry-guard changes. A-A and A-B-A loops
+remain forbidden; A-B-C-A is permitted on these onion paths. An unusable L2 set
+fails closed instead of falling back to unrestricted middle selection. Full
+Vanguards with an additional persistent layer remains unimplemented.
+
+Guard-link padding uses the maximum of two random idle intervals, normally
+1.5–9.5 seconds, with bounds and deferred activation taken from the signed
+consensus. Outgoing traffic resets the timer; incoming traffic cannot suppress
+outgoing padding. The single writer gives queued data precedence and never
+accumulates padding requests. Link 5 uses START with zero timing bounds, or STOP
+when the consensus disables padding. Relay-originated negotiation closes the
+channel. Directory-only bootstrap remains unpadded. Existing application links
+receive verified consensus changes, including disabling and re-enabling padding.
+An expired consensus stops cover writes without closing active circuits. See the
+[connection padding specification](https://spec.torproject.org/padding-spec/connection-level-padding.html).
+
+Each native client dialer and service host shares its guard TLS connections across
+its own circuits. Reuse requires the same numeric endpoint and both authenticated
+identity pins. Circuit encryption, stream isolation and destination binding remain
+separate. Closing one circuit releases its lease; idle channels continue padding
+and remain reusable for `nf_conntimeout_clients` (30 minutes by default, clamped
+to 1 minute–24 hours). Active circuits are not closed by this idle timeout.
+Closing the owner stops and joins its channels immediately.
+
+Each owner permits at most eight guard channels and 1,024 circuit leases, in
+addition to existing client/service circuit limits. Each lease has a bounded
+1,024-cell receive queue. A full circuit queue retires that circuit; it does not
+block the shared reader. Unknown circuit IDs fail the channel; late cells for
+retired, allocated IDs are discarded and IDs are never reused. Transport failure
+still affects every circuit on that TLS connection. Bootstrap traffic and distinct
+client/host owners do not share these pools.
+
+Managed stream control messages (SENDME and END) already queued on one circuit
+are encrypted in order and written together, up to 16 fixed cells per batch.
+There is no batching timer: a lone message is flushed immediately. The transport
+acknowledges only a complete write; a partial batch has the same failure semantics
+as a partial cell. Closing a shared circuit lets its queued batch finish before
+DESTROY and leaves sibling circuits usable. This does not yet aggregate DATA
+writes or implement C Tor's complete output scheduling policy.
+
+Native client introduction and rendezvous circuits negotiate setup padding with
+their second relay when it advertises `Padding=2`. Introduction circuits accept
+up to ten relay cover cells and remain open for ten minutes after the exchange;
+rendezvous circuits send at most one cover cell and accept one. The dialer retains
+at most `MaxCircuits` introduction circuits separately from its stream/build
+slots (16 each by default); new introductions wait when that limit is full.
+Cancellation during setup, protocol failure and closing the dialer still tear
+circuits down. A retained introduction outlives closing its rendezvous stream.
+Signed disable/reduced settings and outgoing global limits are shared through
+the guard store and refreshed when it accepts a live consensus. Busy writers
+skip cover cells. This implements the two current client setup machines, not
+application traffic shaping or service-side padding. See the
+[circuit padding specification](https://spec.torproject.org/padding-spec/circuit-level-padding.html).
+
+TLS now sends a fresh `www.<4..25 random base32 characters>.com` cover SNI for
+each connection, without resolving it or using it as a relay identity. The
+standard Go TLS engine enables the implemented hybrid ML-KEM groups as well as
+P-256/X25519 fallbacks. Go 1.24 supports X25519MLKEM768; Go 1.26+ additionally
+enables SecP256r1MLKEM768. TLS 1.2, older classical peers and HelloRetryRequest
+remain supported. Tor identity pins, certificate binding and disabled resumption
+continue to govern authentication.
+
+The repeated local TLS comparison **still differs from C Tor**. Eight connections
+per client and per batch on 2026-09-21 measured these first outbound TLS record
+payload lengths (the record carries ClientHello):
+
+| Client/build | Before | After |
+| --- | --- | --- |
+| Veil, Go 1.27.1 | 264 bytes in all 8 samples | 1,510–1,526 bytes |
+| C Tor 0.4.9.12, OpenSSL 3.6.4 | 1,539–1,559 bytes | 1,541–1,560 bytes |
+
+SNI length now varies in both implementations. Cipher-suite ordering, extension
+list/order, signature algorithms and groups/key shares still differ. The size
+gap narrowed, but these samples remain distinguishable; no anonymity or
+statistical equivalence claim follows. Run the controlled comparison with:
+
+```sh
+make build
+python3 scripts/check_local_tor.py --tor /path/to/tor \
+  --traffic-samples 8 --traffic-report /tmp/veil-traffic.json
+```
+
+The schema-2 report separates fields that remained stable in the samples from
+variable fields and records full Tor build information. It retains TLS structure,
+record lengths and timing, without names, randoms, session IDs, keys or application
+payloads. Different post-handshake workloads make aggregate byte counts unsuitable
+as parity metrics. The before/after summary is in
+[channel/testdata/tls_comparison_2026-09-21.json](channel/testdata/tls_comparison_2026-09-21.json);
+the earlier single-sample report remains historical. Broader traffic analysis and
+independent privacy/security review remain required. Full ClientHello control
+would require a separately validated TLS implementation; see
+[SECURITY.md](SECURITY.md#tls-profile-follow-up--2026-09-21).
+
+For a matched application workload, run:
+
+```sh
+python3 scripts/compare_workload.py --tor /path/to/tor \
+  --tor-gencert /path/to/tor-gencert \
+  --report /tmp/veil-workload.json --samples 3 --idle 60
+```
+
+This builds a measurement-only `veiltraffic` binary and launches five private
+loopback relays plus a shared C Tor onion service. Each fresh client performs
+warmup, one 4 KiB request, four 4 KiB requests spaced 250 ms apart, a 2 MiB
+download and 60 seconds of application inactivity. Both implementations pass
+through the same local TLS metadata observer; payloads are checked byte for
+byte. The normal build has no observation-proxy route. Output includes a JSON
+summary and a compressed trace of record lengths/times, without record bodies.
+Bootstrap is excluded from the matched phases, and idle records include protocol
+maintenance. These are TLS records, not IP packets or decrypted Tor cells.
+The [initial three-pair comparison](reports/workload_2026-09-21.md) and
+[repeat after control-cell batching](reports/workload_batch_2026-09-21.md) record
+remaining differences; longer idle periods, failure scenarios and public-network
+conditions still need separate evaluation.
+
 ## Connect to v3 onion services
 
 Start the same `make public-proxy` command above. Once bootstrap completes,
@@ -86,8 +218,9 @@ The Go `client.Dialer` supports the same `host.onion:port` destinations.
 
 Connections in the same explicit session scope can reuse service circuits and
 verified descriptors. Untagged connections fetch independently. HSDir
-fetches use three hops and close before introduction; setup uses at most two
-simultaneous three-hop circuits per connection slot. Descriptors are bounded to
+fetches use four relays and close before introduction; introduction circuits also
+use four relays, while client rendezvous uses three. Setup uses at most two
+simultaneous circuits per connection slot. Descriptors are bounded to
 50,000 bytes and stay in memory. The default onion setup budget is three minutes
 (`-onion-timeout`), with up to eight directory attempts and three introduction
 attempts for supported transient failures. Authentication failures stop setup.
@@ -205,9 +338,22 @@ loopback address; client-supplied addresses are never dialed directly.
 Defaults bound the host to 16 rendezvous circuits and 32 streams,
 5 minutes idle per forwarded stream and a 1-hour circuit lifetime. Replays are rejected,
 introduction processing is rate-limited, and replay caches have fixed bounds.
-Each introduction generation lasts at most two hours. This first implementation
-restarts the generation on introduction failure or rotation, closing its active
-streams; seamless draining/replacement is future work. Client rendezvous links
+Introduction keys rotate on a two-hour timer or introduction failure. Existing
+rendezvous circuits and their streams survive introduction replacement, subject
+to their own lifetime and I/O limits. Shutdown or an unrecoverable host error
+still closes all circuits and streams. Healthy old introduction points continue
+accepting new connections while replacements are built and published, including
+connections using a cached older descriptor. Advertised keys remain available
+until the latest descriptor certificate expires, even after a partial upload or
+lost acknowledgment. Certificates expire four hours after creation, rounded up
+to a whole UTC hour; this can be later than the descriptor's three-hour cache TTL.
+
+At most four introduction generations (12 circuits) coexist. Repeated failures
+can defer further replacement until a generation expires or loses all its points.
+The 64-introductions/second processing budget, rendezvous and stream limits are
+shared across generations. Replay history remains bounded and is kept while its
+keys can accept traffic. Relay outages, cache saturation and incomplete HSDir
+publication can still affect availability. Client rendezvous links
 must exactly match the supported links of a relay in the live consensus.
 
 Public-network interoperability has been verified with an independent C Tor
@@ -215,8 +361,9 @@ client: HTTP, three concurrent 2.4 MB downloads and unmapped-port rejection.
 See [VALIDATION.md](VALIDATION.md) for results and partial-publication limitations.
 
 This is a first hosting milestone, not production anonymity parity. Restricted
-services/client authorization, PoW defenses, vanguards, multiple port mappings,
-offline identity keys and transparent introduction rotation remain unimplemented.
+services/client authorization, PoW defenses, full Vanguards, multiple port mappings,
+offline identity keys remain unimplemented. Long-running public availability
+during introduction replacement has not been validated.
 The normal Tor identity/guard/descriptor verification rules remain in force.
 
 For a reproducible private-network interoperability check, with C Tor and
@@ -276,8 +423,8 @@ releasing the state lock or stopping its directory manager.
 must close accepted connections, and set their read/write deadlines; the
 forwarder's `IdleTimeout` does not apply. `LocalAddr` identifies the onion service;
 `RemoteAddr` is an anonymous stream label, not a client IP address. Circuit
-lifetime limits and the introduction-rotation interruptions described above
-still apply. `make service-check` exercises both forwarding and listener hosting
+lifetime limits still apply; introduction rotation preserves existing connections.
+`make service-check` exercises both forwarding and listener hosting
 with an independent C Tor client on a private test network.
 
 ## Onion-only (dark) mode
@@ -511,7 +658,7 @@ The address must be a numeric `IP:port` (bracket IPv6). The RSA fingerprint is 4
 | `torcert` | `tor-cert`, channel certificate checks | Ed25519 identity/signing/TLS chain; RSA identity and cross-certificate; validity, pin, and TLS binding checks |
 | `channel` | `tor-proto/channel`, client channel handshake | TLS 1.2/1.3; ordered client handshake; bounded cell queues; cancellation; random circuit IDs; teardown |
 | `directory` | `tor-netdoc`, initial `tor-dirmgr`/`tor-guardmgr`/path selection | Authority certificates, signed microdescriptor consensus, digest binding, native BEGIN_DIR fetches, private cache, refresh/retry manager, reusable channels, sampled/confirmed/primary guards, weighted path selection |
-| `circuit` | `tor-proto/circuit`, circuit construction | Verified three-hop selection, tracked guard attempts, CREATE2/EXTEND2, RELAY_EARLY budget, ordered relay messages, multiplexed `net.Conn` streams, SENDME/backpressure, deadlines/cancellation, bounded teardown |
+| `circuit` | `tor-proto/circuit`, circuit construction | Verified three-hop clearnet and Vanguards-Lite onion selection, tracked guard attempts, CREATE2/EXTEND2, RELAY_EARLY budget, ordered relay messages, multiplexed `net.Conn` streams, SENDME/backpressure, deadlines/cancellation, bounded teardown |
 | `onion` | `tor-hscrypto`, `tor-netdoc/hsdesc` | V3 addresses, blinded keys, authenticated/decrypted descriptors, hs-ntor |
 | `client` | Client lifecycle | Verified snapshot/guard integration, scoped circuit reuse/rotation, dedicated untagged circuits, bounded descriptor caching, lifetime ownership and SOCKS failure mapping |
 | `socks5` | SOCKS frontend | Loopback CONNECT, IPv4/IPv6/hostnames, token negotiation, bounded connections, timeouts, bidirectional relay and cleanup |
@@ -519,7 +666,7 @@ The address must be a numeric `IP:port` (bracket IPv6). The RSA fingerprint is 4
 
 The module path is currently `veil`; change it and the internal imports together when a hosting location is chosen. The public API is provisional.
 
-The offline codec retains unknown commands. Live channels reject unsupported commands and invalid handshake order, while ignoring padding and repeated VERSIONS as specified. The circuit package implements fixed three-hop construction and relay transport. Managed TCP streams use the circuit package; the directory package retains a dedicated single-stream, one-hop transport. PADDING_NEGOTIATE cells on link 5 are exposed to the caller; padding policy and scheduling are not yet implemented.
+The offline codec retains unknown commands. Live channels reject unsupported commands and invalid handshake order, while ignoring padding and repeated VERSIONS as specified. The circuit package implements three-hop clearnet circuits and three/four-hop onion circuits with relay transport. Managed TCP streams use the circuit package; the directory package retains a dedicated single-stream, one-hop transport. Clients reject relay-originated PADDING_NEGOTIATE and close the channel. Application guard links schedule idle padding from verified consensus parameters; directory-only bootstrap links do not. See [Privacy protections and limits](#privacy-protections-and-limits).
 
 ## Authenticated channel API
 
@@ -613,7 +760,7 @@ Keep the directory current until interrupted:
 
 `GuardStore` persists a bounded, bandwidth-weighted sample and confirmation order. Primary guards are derived from that state; failures do not delete identities or select an unrestricted new set. Separate directory reachability prevents a failed directory request from poisoning ordinary-circuit reachability. Guard dates are randomized, unlisted/old entries expire under live consensuses, retry delays are jittered, and pending non-primary attempts must pass a usability check. Existing version-1 single-guard files migrate while preserving the chosen identity as an unconfirmed sampled guard.
 
-Circuit builders use `GuardStore.Select`, report authenticated circuit success or failure through its `GuardAttempt`, check `Usability`, and call `Close` when done. Cancellation closes an attempt without recording a failure. Guard state write failures stop further selection until the store is reopened. `GuardStore.Guard` and `Snapshot.SelectPath(guardStore, port, ipv6, now)` remain offline previews, not circuit-attempt tracking. Path selection enforces flags/protocols, mutual fingerprint families/shared family IDs, IPv4 /16 or IPv6 /32 separation, and exit-port summaries. It does not guarantee an exit permits a particular destination address.
+Circuit builders use `GuardStore.Select`, report authenticated circuit success or failure through its `GuardAttempt`, check `Usability`, and call `Close` when done. Cancellation closes an attempt without recording a failure. Guard state write failures stop further selection until the store is reopened. `GuardStore.Guard` and `Snapshot.SelectPath(guardStore, port, ipv6, now)` remain offline previews, not circuit-attempt tracking. Clearnet path selection enforces flags/protocols, mutual fingerprint families/shared family IDs, IPv4 /16 or IPv6 /32 separation, and exit-port summaries. Onion circuits apply the Vanguards-Lite path rules described below. It does not guarantee an exit permits a particular destination address.
 
 All stateful CLI commands (`proxy`, `directory-bootstrap`, `directory-watch`,
 and `circuit-check`) acquire a nonblocking exclusive lock before opening state.
@@ -626,7 +773,7 @@ are macOS, Linux, FreeBSD, OpenBSD, NetBSD and DragonFly BSD; unsupported system
 or filesystems fail closed. Use a local filesystem. macOS is runtime-tested;
 other targets are compile-checked. State directories must have mode 0700 and files 0600. Only the default unrestricted guard context is implemented; bridges and custom entry/reachability filters require later work. Three-hop construction now uses tracked guard attempts; application path-bias accounting remains unimplemented. Count-valued guard parameters are capped at 1,024 to bound state. Sampling uses the current guard specification's count-based threshold; it does not reproduce Arti's bandwidth-fraction variant.
 
-Only the microdescriptor directory route is implemented. Full router-descriptor parsing, compressed downloads, consensus diffs, and partial-directory sufficiency remain future work. Public bootstrap uses bundled authority/fallback pins. Link padding, traffic fingerprints, and complete production privacy behavior are not implemented or validated. Veil remains an experimental development implementation.
+Only the microdescriptor directory route is implemented. Full router-descriptor parsing, compressed downloads, consensus diffs, and partial-directory sufficiency remain future work. Public bootstrap uses bundled authority/fallback pins. Guard-link idle padding is implemented. A controlled TLS comparison finds observable differences from C Tor; complete production privacy behavior remains unvalidated. Veil remains an experimental development implementation.
 
 ## Three-hop circuit API
 
@@ -662,7 +809,8 @@ for the entire request and tears down failed attempts before retrying. It never
 replays stream opens or application bytes.
 
 `ctx` owns the circuit lifetime; the separate build timeout stops applying after
-construction. Each circuit owns a dedicated authenticated channel. `Send` and
+construction. Each circuit owns a dedicated channel or a circuit-scoped lease
+on an owner-managed shared channel. `Send` and
 `Receive` expose low-level relay messages, hop indices, and digest tags. Outgoing
 messages are serialized through encryption and writing; incoming messages are
 authenticated in wire order and delivered through a bounded queue. Stream
@@ -676,9 +824,10 @@ messages, invalid digests, malformed cells, DESTROY, and TRUNCATED terminate the
 circuit. Unknown authenticated commands and DROP are ignored with bounded runs.
 Canceled queued sends and individual receives leave the circuit usable; failed
 writes after encryption terminate it. `Close` joins the reader/lifetime loops and
-attempts a bounded DESTROY with reason NONE before closing the dedicated channel.
-Channel sharing across circuits and production padding remain future work;
-the client now pools complete circuits within explicit isolation scopes. Protocol
+attempts a bounded DESTROY with reason NONE before releasing its transport.
+Native clients and hosts share guard channels; direct circuit API users can
+supply `Options.ChannelPool` or the optional pool argument to `BuildInternal`.
+The client also pools complete circuits within explicit isolation scopes. Protocol
 references: [circuit construction](https://spec.torproject.org/tor-spec/creating-circuits.html),
 [RELAY_EARLY](https://spec.torproject.org/tor-spec/relay-early.html), and
 [teardown](https://spec.torproject.org/tor-spec/tearing-down-circuits.html).
@@ -742,8 +891,8 @@ retain bounded late-DATA credit and are never reused; 65,535 allocations exhaust
 a circuit. The verified `circwindow` is clamped to 100..1000; this implementation
 supports multiples of 100 and rejects unsupported SENDME versions before building.
 The raw circuit stream API does not negotiate congestion control, isolate application
-identities, pool circuits, retry failed streams, or implement production traffic
-padding. The `client`/SOCKS layer isolates connections by allocating separate circuits.
+identities, pool circuits, retry failed streams, or shape application traffic.
+The `client`/SOCKS layer manages isolation and circuit lifetime.
 
 Protocol references: [opening streams](https://spec.torproject.org/tor-spec/opening-streams.html),
 [flow control](https://spec.torproject.org/tor-spec/flow-control.html), and
@@ -838,7 +987,7 @@ circuit-close propagation. All network fixtures bind only to localhost and are
 removed on exit. This test uses explicit test-only hop pins; production path
 selection still enforces subnet separation and verified exit summaries.
 
-Remaining work includes adaptive circuit management, stream retry policy, padding and independent privacy/security review; see [ROADMAP.md](ROADMAP.md). Public HTTPS interoperability has been tested. TLS traffic fingerprint parity and end-to-end anonymity properties remain **unvalidated**. Recorded results and limits are in [VALIDATION.md](VALIDATION.md).
+Remaining work includes adaptive circuit management, stream retry policy, complete padding lifecycle and independent privacy/security review; see [ROADMAP.md](ROADMAP.md). Public HTTPS interoperability has been tested. TLS traffic fingerprint parity and end-to-end anonymity properties remain **unvalidated**. Recorded results and limits are in [VALIDATION.md](VALIDATION.md).
 
 ## License
 

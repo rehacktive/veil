@@ -58,6 +58,36 @@ func TestServiceDescriptorRoundTrip(t *testing.T) {
 		t.Fatal("bad signature accepted")
 	}
 }
+
+func TestServiceDescriptorAbsoluteExpiry(t *testing.T) {
+	created := time.Date(2026, 9, 21, 10, 17, 30, 0, time.UTC)
+	expiry := time.Date(2026, 9, 21, 15, 0, 0, 0, time.UTC)
+	if got := ServiceDescriptorExpiry(created); !got.Equal(expiry) {
+		t.Fatal("certificate expiry must round up to the Unix hour", got)
+	}
+	seed := [32]byte{17}
+	key := ed25519.NewKeyFromSeed(seed[:])
+	var identity [32]byte
+	copy(identity[:], key[32:])
+	intro := testServiceIntro(t)
+	raw, err := CreateDescriptor(seed, 42, 1440, 1, []Introduction{intro.Public}, created)
+	if err != nil {
+		t.Fatal(err)
+	}
+	blinded, sub, err := Blind(identity, 42, 1440)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A late fetch can outlive created+descriptor-lifetime. Retaining keys for
+	// only three hours would break this still-valid cached descriptor.
+	d, err := ParseDescriptor(raw, blinded, sub, expiry.Add(-time.Second))
+	if err != nil || !d.Expires.Equal(expiry) {
+		t.Fatal("late-fetched descriptor lost its advertised introduction lifetime", err)
+	}
+	if _, err := ParseDescriptor(raw, blinded, sub, expiry); err == nil {
+		t.Fatal("expired certificate accepted")
+	}
+}
 func TestServiceHandshakeAndIntroductionAuthentication(t *testing.T) {
 	intro := testServiceIntro(t)
 	sub := [32]byte{9}

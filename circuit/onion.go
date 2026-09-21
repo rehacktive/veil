@@ -33,7 +33,7 @@ type onionCircuit struct {
 
 // BuildInternal uses the verified selector and persistent guard accounting for
 // an onion protocol circuit, without treating its final relay as an exit.
-func BuildInternal(ctx context.Context, s *directory.Snapshot, guards *directory.GuardStore, target *directory.Relay, purpose OnionPurpose, timeout time.Duration) (*Circuit, error) {
+func BuildInternal(ctx context.Context, s *directory.Snapshot, guards *directory.GuardStore, target *directory.Relay, purpose OnionPurpose, timeout time.Duration, pools ...*channel.Pool) (*Circuit, error) {
 	if guards == nil || purpose < OnionDirectory || purpose > OnionServiceRendezvous || timeout < 0 || (target == nil && purpose != OnionRendezvous && purpose != OnionServiceIntroduction) {
 		return nil, ErrProtocol
 	}
@@ -44,29 +44,32 @@ func BuildInternal(ctx context.Context, s *directory.Snapshot, guards *directory
 	if err != nil {
 		return nil, err
 	}
-	var excluded []directory.Fingerprint
-	if target != nil {
-		excluded, err = s.InternalGuardExclusions(*target, time.Now())
-		if err != nil {
-			return nil, err
-		}
-	}
-	a, err := guards.Select(s, false, excluded, time.Now())
+	a, err := guards.Select(s, false, nil, time.Now())
 	if err != nil {
 		return nil, err
 	}
-	p, err := s.SelectInternalPath(a.Relay(), target, time.Now())
+	p, err := guards.SelectVanguardPath(s, a.Relay(), target, purpose == OnionRendezvous, time.Now())
 	if err != nil {
 		a.Close()
 		return nil, err
 	}
-	var hops [3]hop
-	for i, r := range []directory.Relay{p.Guard, p.Middle, p.Exit} {
+	hops := make([]hop, len(p.Relays()))
+	for i, r := range p.Relays() {
 		hops[i] = hop{r.Target(), r.NTor()}
 	}
-	c, err := build(ctx, hops, a, timeout, func(ctx context.Context, t channel.Target, o channel.Options) (transport, error) {
+	padding, err := s.LinkPadding()
+	if err != nil {
+		a.Close()
+		return nil, err
+	}
+	c, err := buildHops(ctx, hops, a, timeout, func(ctx context.Context, t channel.Target, o channel.Options) (transport, error) {
+		o.Padding = &padding
+		o.PaddingPolicy = guards.LinkPaddingPolicy()
+		if len(pools) > 0 && pools[0] != nil {
+			return pools[0].Acquire(ctx, t, o)
+		}
 		return channel.Dial(ctx, t, o)
-	}, func() bool { return s.Valid(time.Now()) })
+	}, func() bool { return s.Valid(time.Now()) }, true, guards.PaddingBudget())
 	if err != nil {
 		return nil, err
 	}
@@ -74,6 +77,7 @@ func BuildInternal(ctx context.Context, s *directory.Snapshot, guards *directory
 	c.path = p
 	c.window = window
 	c.hs = &onionCircuit{purpose: purpose}
+	c.paddingSupported = p.Middle.SupportsCircuitPadding()
 	c.mu.Unlock()
 	return c, nil
 }
@@ -81,7 +85,7 @@ func BuildInternal(ctx context.Context, s *directory.Snapshot, guards *directory
 func (c *Circuit) checkOnionSend(hop int, m cell.RelayMessage) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if c.hs == nil || hop != 2 || m.StreamID != 0 || c.hs.stage != 1 {
+	if c.hs == nil || hop != c.relayEnd || m.StreamID != 0 || c.hs.stage != 1 {
 		return ErrProtocol
 	}
 	if m.Command == cell.RelayEstablishIntro && c.hs.purpose == OnionServiceIntroduction && len(m.Data) >= 134 {
@@ -109,7 +113,7 @@ func (c *Circuit) acceptOnionControl(m Message) (result error) {
 	}()
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if c.hs == nil || m.Hop != 2 || m.StreamID != 0 {
+	if c.hs == nil || m.Hop != c.relayEnd || m.StreamID != 0 {
 		return ErrProtocol
 	}
 	h := c.hs
@@ -157,7 +161,7 @@ func (c *Circuit) acceptOnionControl(m Message) (result error) {
 			return err
 		}
 		h.stage = 3
-		c.endHop.Store(3)
+		c.endHop.Add(1)
 	case cell.RelayIntroduceAck:
 		if h.purpose != OnionIntroduction || h.stage != 1 || len(m.Data) < 3 {
 			return ErrProtocol
@@ -190,7 +194,7 @@ func (c *Circuit) PrepareRendezvous(ctx context.Context, cookie [20]byte, host s
 	c.hs.host = strings.TrimSuffix(strings.ToLower(host), ".")
 	c.port = port
 	c.mu.Unlock()
-	if _, err := c.Send(ctx, 2, cell.RelayMessage{Command: cell.RelayEstablishRendezvous, Data: cookie[:]}); err != nil {
+	if _, err := c.Send(ctx, c.relayEnd, cell.RelayMessage{Command: cell.RelayEstablishRendezvous, Data: cookie[:]}); err != nil {
 		return err
 	}
 	m, err := c.Receive(ctx)
@@ -200,7 +204,7 @@ func (c *Circuit) PrepareRendezvous(ctx context.Context, cookie [20]byte, host s
 	if m.Command != cell.RelayRendezvousEstablished {
 		return ErrProtocol
 	}
-	return nil
+	return c.startPadding(ctx)
 }
 
 func (c *Circuit) Introduce(ctx context.Context, payload []byte) error {
@@ -211,7 +215,10 @@ func (c *Circuit) Introduce(ctx context.Context, payload []byte) error {
 	}
 	c.hs.stage = 1
 	c.mu.Unlock()
-	if _, err := c.Send(ctx, 2, cell.RelayMessage{Command: cell.RelayIntroduce1, Data: payload}); err != nil {
+	if _, err := c.Send(ctx, c.relayEnd, cell.RelayMessage{Command: cell.RelayIntroduce1, Data: payload}); err != nil {
+		return err
+	}
+	if err := c.startPadding(ctx); err != nil {
 		return err
 	}
 	m, err := c.Receive(ctx)

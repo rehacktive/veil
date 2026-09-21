@@ -1,0 +1,2379 @@
+{
+  "schema": 1,
+  "scope": "matched synthetic onion workload over controlled loopback TLS taps",
+  "tor_build": [
+    "Tor version 0.4.9.12.",
+    "Tor is running on Darwin with Libevent 2.1.13-stable, OpenSSL 3.6.4, Zlib 1.2.12, Liblzma 5.8.4, Libzstd 1.5.7 and Unknown N/A as libc.",
+    "Tor compiled with clang version 17.0.0"
+  ],
+  "go_build": "go version go1.27.1 darwin/arm64",
+  "platform": "macOS-15.7.7-arm64-arm-64bit",
+  "veil_binary_sha256": "335e6efb48870964fe8582b518f661120429fc0fcc2a6e2d40d434dfaa6715d3",
+  "configuration": {
+    "sample_pairs": 3,
+    "idle_seconds": 60,
+    "warmup_settle_seconds": 5,
+    "native_build_tag": "veiltraffic",
+    "race_instrumented": false,
+    "reference_entry_guards": true,
+    "reference_vanguards_lite": true,
+    "private_relays": 5,
+    "shared_service": "C Tor onion host",
+    "guard_selection": "sole consensus Guard; reference explicitly pinned to it",
+    "application": "identical SOCKS-auth scope; HTTP Connection: close; exact payload validation"
+  },
+  "limitations": [
+    "TLS record metadata, not IP packets, TCP segmentation or decrypted Tor cells.",
+    "Both clients traverse the same local SOCKS observation shim; it can affect buffering and scheduling.",
+    "One machine and five private relays; local latency and CPU costs are not public-network conditions.",
+    "Preparation/bootstrap is reported separately and is not a matched workload metric.",
+    "Application idle includes protocol maintenance; encrypted records cannot be labeled as pure padding.",
+    "Record attribution uses completion time at the tap; records may cross phase boundaries.",
+    "Open-at-end channels are right-censored, not measured full lifetimes.",
+    "Small sample counts cannot establish anonymity or statistical indistinguishability."
+  ],
+  "pairs": [
+    {
+      "order": [
+        "veil",
+        "c_tor"
+      ],
+      "veil": {
+        "phases": {
+          "preparation": {
+            "start_ms": 0,
+            "end_ms": 7358.011,
+            "warm_request_started_ms": 106.075,
+            "warm_failures": 1
+          },
+          "single": {
+            "start_ms": 7358.258,
+            "end_ms": 7375.696
+          },
+          "burst": {
+            "start_ms": 7375.707,
+            "end_ms": 8205.877
+          },
+          "bulk": {
+            "start_ms": 8205.881,
+            "end_ms": 8365.616
+          },
+          "idle": {
+            "start_ms": 8365.618,
+            "end_ms": 68370.826
+          }
+        },
+        "requests": {
+          "single": [
+            {
+              "elapsed_ms": 17.345,
+              "request_bytes": 112,
+              "response_bytes": 4156,
+              "payload_bytes": 4096
+            }
+          ],
+          "burst": [
+            {
+              "elapsed_ms": 19.503,
+              "request_bytes": 112,
+              "response_bytes": 4156,
+              "payload_bytes": 4096
+            },
+            {
+              "elapsed_ms": 15.987,
+              "request_bytes": 112,
+              "response_bytes": 4156,
+              "payload_bytes": 4096
+            },
+            {
+              "elapsed_ms": 20.682,
+              "request_bytes": 112,
+              "response_bytes": 4156,
+              "payload_bytes": 4096
+            },
+            {
+              "elapsed_ms": 20.081,
+              "request_bytes": 112,
+              "response_bytes": 4156,
+              "payload_bytes": 4096
+            }
+          ],
+          "bulk": [
+            {
+              "elapsed_ms": 159.654,
+              "request_bytes": 111,
+              "response_bytes": 2097215,
+              "payload_bytes": 2097152
+            }
+          ],
+          "idle": []
+        },
+        "metrics": {
+          "preparation": {
+            "duration_ms": 7358.011,
+            "outbound": {
+              "records": 80,
+              "tls_wire_bytes": 41853,
+              "record_payload_lengths": {
+                "1": 2,
+                "26": 2,
+                "69": 2,
+                "531": 72,
+                "1513": 1,
+                "1516": 1
+              },
+              "median_record_gap_ms": 2.981,
+              "max_record_gap_ms": 2010.462
+            },
+            "inbound": {
+              "records": 94,
+              "tls_wire_bytes": 77404,
+              "record_payload_lengths": {
+                "1": 2,
+                "19": 1,
+                "23": 2,
+                "69": 2,
+                "74": 4,
+                "281": 2,
+                "531": 62,
+                "595": 1,
+                "618": 2,
+                "1045": 3,
+                "1210": 2,
+                "2060": 2,
+                "2073": 1,
+                "3101": 2,
+                "3293": 1,
+                "3615": 1,
+                "4065": 4
+              },
+              "median_record_gap_ms": 3.095,
+              "max_record_gap_ms": 2012.316
+            },
+            "guard_connections_opened": 2
+          },
+          "single": {
+            "duration_ms": 17.438,
+            "outbound": {
+              "records": 2,
+              "tls_wire_bytes": 1072,
+              "record_payload_lengths": {
+                "531": 2
+              },
+              "median_record_gap_ms": 6.651,
+              "max_record_gap_ms": 6.651
+            },
+            "inbound": {
+              "records": 3,
+              "tls_wire_bytes": 5720,
+              "record_payload_lengths": {
+                "531": 1,
+                "1109": 1,
+                "4065": 1
+              },
+              "median_record_gap_ms": 3.685,
+              "max_record_gap_ms": 7.37
+            },
+            "guard_connections_opened": 0
+          },
+          "burst": {
+            "duration_ms": 830.17,
+            "outbound": {
+              "records": 8,
+              "tls_wire_bytes": 4288,
+              "record_payload_lengths": {
+                "531": 8
+              },
+              "median_record_gap_ms": 10.092,
+              "max_record_gap_ms": 265.07
+            },
+            "inbound": {
+              "records": 12,
+              "tls_wire_bytes": 22880,
+              "record_payload_lengths": {
+                "531": 4,
+                "1109": 1,
+                "1559": 3,
+                "3615": 3,
+                "4065": 1
+              },
+              "median_record_gap_ms": 7.431,
+              "max_record_gap_ms": 262.912
+            },
+            "guard_connections_opened": 0
+          },
+          "bulk": {
+            "duration_ms": 159.735,
+            "outbound": {
+              "records": 120,
+              "tls_wire_bytes": 68432,
+              "record_payload_lengths": {
+                "531": 112,
+                "1045": 8
+              },
+              "median_record_gap_ms": 1.045,
+              "max_record_gap_ms": 13.917
+            },
+            "inbound": {
+              "records": 660,
+              "tls_wire_bytes": 2195422,
+              "record_payload_lengths": {
+                "209": 1,
+                "273": 69,
+                "465": 2,
+                "529": 23,
+                "531": 2,
+                "659": 1,
+                "723": 5,
+                "979": 5,
+                "1109": 1,
+                "1173": 2,
+                "1237": 1,
+                "1429": 1,
+                "1493": 1,
+                "1559": 4,
+                "2007": 2,
+                "2073": 3,
+                "2265": 1,
+                "2393": 1,
+                "2457": 3,
+                "2521": 3,
+                "2587": 5,
+                "2651": 3,
+                "2715": 1,
+                "2779": 1,
+                "2907": 2,
+                "3035": 6,
+                "3101": 3,
+                "3229": 1,
+                "3293": 2,
+                "3549": 2,
+                "3615": 3,
+                "3743": 1,
+                "3809": 53,
+                "4063": 2,
+                "4065": 444
+              },
+              "median_record_gap_ms": 0.0,
+              "max_record_gap_ms": 10.974
+            },
+            "guard_connections_opened": 0
+          },
+          "idle": {
+            "duration_ms": 60005.208,
+            "outbound": {
+              "records": 8,
+              "tls_wire_bytes": 4288,
+              "record_payload_lengths": {
+                "531": 8
+              },
+              "median_record_gap_ms": 7361.89,
+              "max_record_gap_ms": 9477.962
+            },
+            "inbound": {
+              "records": 6,
+              "tls_wire_bytes": 3216,
+              "record_payload_lengths": {
+                "531": 6
+              },
+              "median_record_gap_ms": 8784.507,
+              "max_record_gap_ms": 11600.786
+            },
+            "guard_connections_opened": 0
+          }
+        },
+        "connections": [
+          {
+            "id": 1,
+            "role": "guard",
+            "opened_ms": 9.426,
+            "closed_ms": 25.668,
+            "open_at_observation_end": false,
+            "outbound": {
+              "client_hello": {
+                "legacy_version": 771,
+                "session_id_length": 32,
+                "cipher_suites": [
+                  49195,
+                  49199,
+                  49196,
+                  49200,
+                  52393,
+                  52392,
+                  49161,
+                  49171,
+                  49162,
+                  49172,
+                  4865,
+                  4866,
+                  4867
+                ],
+                "compression_methods": [
+                  0
+                ],
+                "extensions": [
+                  0,
+                  11,
+                  65281,
+                  23,
+                  18,
+                  5,
+                  10,
+                  13,
+                  50,
+                  43,
+                  51
+                ],
+                "server_name_present": true,
+                "key_shares": [
+                  {
+                    "group": 4588,
+                    "length": 1216
+                  },
+                  {
+                    "group": 29,
+                    "length": 32
+                  }
+                ],
+                "server_name_length": 16,
+                "server_name_tor_shape": true,
+                "supported_groups": [
+                  4588,
+                  4587,
+                  29,
+                  23
+                ],
+                "signature_algorithms": [
+                  2308,
+                  2309,
+                  2310,
+                  2052,
+                  1027,
+                  2055,
+                  2053,
+                  2054,
+                  1025,
+                  1281,
+                  1537,
+                  1283,
+                  1539,
+                  513,
+                  515
+                ],
+                "supported_versions": [
+                  772,
+                  771
+                ]
+              }
+            },
+            "inbound": {
+              "client_hello": null
+            }
+          },
+          {
+            "id": 2,
+            "role": "guard",
+            "opened_ms": 111.034,
+            "closed_ms": null,
+            "open_at_observation_end": true,
+            "outbound": {
+              "client_hello": {
+                "legacy_version": 771,
+                "session_id_length": 32,
+                "cipher_suites": [
+                  49195,
+                  49199,
+                  49196,
+                  49200,
+                  52393,
+                  52392,
+                  49161,
+                  49171,
+                  49162,
+                  49172,
+                  4865,
+                  4866,
+                  4867
+                ],
+                "compression_methods": [
+                  0
+                ],
+                "extensions": [
+                  0,
+                  11,
+                  65281,
+                  23,
+                  18,
+                  5,
+                  10,
+                  13,
+                  50,
+                  43,
+                  51
+                ],
+                "server_name_present": true,
+                "key_shares": [
+                  {
+                    "group": 4588,
+                    "length": 1216
+                  },
+                  {
+                    "group": 29,
+                    "length": 32
+                  }
+                ],
+                "server_name_length": 19,
+                "server_name_tor_shape": true,
+                "supported_groups": [
+                  4588,
+                  4587,
+                  29,
+                  23
+                ],
+                "signature_algorithms": [
+                  2308,
+                  2309,
+                  2310,
+                  2052,
+                  1027,
+                  2055,
+                  2053,
+                  2054,
+                  1025,
+                  1281,
+                  1537,
+                  1283,
+                  1539,
+                  513,
+                  515
+                ],
+                "supported_versions": [
+                  772,
+                  771
+                ]
+              }
+            },
+            "inbound": {
+              "client_hello": null
+            }
+          }
+        ],
+        "observation_end_ms": 68371.03,
+        "guard_channels_open_at_end": 1
+      },
+      "c_tor": {
+        "phases": {
+          "preparation": {
+            "start_ms": 0,
+            "end_ms": 7164.807,
+            "warm_request_started_ms": 2094.729,
+            "warm_failures": 0
+          },
+          "single": {
+            "start_ms": 7164.884,
+            "end_ms": 7181.62
+          },
+          "burst": {
+            "start_ms": 7181.624,
+            "end_ms": 7998.821
+          },
+          "bulk": {
+            "start_ms": 7998.825,
+            "end_ms": 8211.059
+          },
+          "idle": {
+            "start_ms": 8211.062,
+            "end_ms": 68216.191
+          }
+        },
+        "requests": {
+          "single": [
+            {
+              "elapsed_ms": 16.694,
+              "request_bytes": 112,
+              "response_bytes": 4156,
+              "payload_bytes": 4096
+            }
+          ],
+          "burst": [
+            {
+              "elapsed_ms": 16.932,
+              "request_bytes": 112,
+              "response_bytes": 4156,
+              "payload_bytes": 4096
+            },
+            {
+              "elapsed_ms": 14.231,
+              "request_bytes": 112,
+              "response_bytes": 4156,
+              "payload_bytes": 4096
+            },
+            {
+              "elapsed_ms": 17.139,
+              "request_bytes": 112,
+              "response_bytes": 4156,
+              "payload_bytes": 4096
+            },
+            {
+              "elapsed_ms": 14.933,
+              "request_bytes": 112,
+              "response_bytes": 4156,
+              "payload_bytes": 4096
+            }
+          ],
+          "bulk": [
+            {
+              "elapsed_ms": 212.001,
+              "request_bytes": 111,
+              "response_bytes": 2097215,
+              "payload_bytes": 2097152
+            }
+          ],
+          "idle": []
+        },
+        "metrics": {
+          "preparation": {
+            "duration_ms": 7164.807,
+            "outbound": {
+              "records": 31,
+              "tls_wire_bytes": 21270,
+              "record_payload_lengths": {
+                "1": 1,
+                "28": 1,
+                "69": 1,
+                "531": 17,
+                "1045": 10,
+                "1540": 1
+              },
+              "median_record_gap_ms": 3.316,
+              "max_record_gap_ms": 996.259
+            },
+            "inbound": {
+              "records": 55,
+              "tls_wire_bytes": 55325,
+              "record_payload_lengths": {
+                "1": 1,
+                "23": 1,
+                "69": 1,
+                "74": 2,
+                "281": 1,
+                "531": 32,
+                "618": 1,
+                "1045": 5,
+                "1210": 1,
+                "1559": 1,
+                "2060": 1,
+                "2073": 1,
+                "2587": 2,
+                "3615": 1,
+                "3807": 1,
+                "4065": 3
+              },
+              "median_record_gap_ms": 3.2664999999999997,
+              "max_record_gap_ms": 994.747
+            },
+            "guard_connections_opened": 1
+          },
+          "single": {
+            "duration_ms": 16.736,
+            "outbound": {
+              "records": 2,
+              "tls_wire_bytes": 1072,
+              "record_payload_lengths": {
+                "531": 2
+              },
+              "median_record_gap_ms": 5.96,
+              "max_record_gap_ms": 5.96
+            },
+            "inbound": {
+              "records": 3,
+              "tls_wire_bytes": 5720,
+              "record_payload_lengths": {
+                "531": 1,
+                "1559": 1,
+                "3615": 1
+              },
+              "median_record_gap_ms": 4.3475,
+              "max_record_gap_ms": 7.28
+            },
+            "guard_connections_opened": 0
+          },
+          "burst": {
+            "duration_ms": 817.197,
+            "outbound": {
+              "records": 9,
+              "tls_wire_bytes": 4824,
+              "record_payload_lengths": {
+                "531": 9
+              },
+              "median_record_gap_ms": 7.1805,
+              "max_record_gap_ms": 263.851
+            },
+            "inbound": {
+              "records": 12,
+              "tls_wire_bytes": 22880,
+              "record_payload_lengths": {
+                "531": 4,
+                "1109": 1,
+                "1559": 3,
+                "3615": 3,
+                "4065": 1
+              },
+              "median_record_gap_ms": 6.792,
+              "max_record_gap_ms": 260.004
+            },
+            "guard_connections_opened": 0
+          },
+          "bulk": {
+            "duration_ms": 212.234,
+            "outbound": {
+              "records": 108,
+              "tls_wire_bytes": 73308,
+              "record_payload_lengths": {
+                "531": 84,
+                "1045": 18,
+                "1559": 6
+              },
+              "median_record_gap_ms": 1.44,
+              "max_record_gap_ms": 11.686
+            },
+            "inbound": {
+              "records": 670,
+              "tls_wire_bytes": 2195128,
+              "record_payload_lengths": {
+                "145": 3,
+                "209": 1,
+                "273": 68,
+                "337": 1,
+                "465": 2,
+                "529": 18,
+                "531": 7,
+                "595": 1,
+                "723": 3,
+                "851": 1,
+                "979": 2,
+                "1045": 5,
+                "1109": 2,
+                "1173": 1,
+                "1237": 5,
+                "1365": 1,
+                "1493": 1,
+                "1559": 2,
+                "1623": 2,
+                "1687": 1,
+                "1751": 1,
+                "1879": 2,
+                "1943": 2,
+                "2007": 1,
+                "2073": 4,
+                "2201": 2,
+                "2393": 3,
+                "2457": 2,
+                "2521": 1,
+                "2587": 4,
+                "2715": 2,
+                "2779": 1,
+                "2971": 1,
+                "3035": 2,
+                "3101": 5,
+                "3165": 4,
+                "3229": 1,
+                "3293": 1,
+                "3421": 2,
+                "3485": 2,
+                "3549": 2,
+                "3615": 14,
+                "3809": 51,
+                "3999": 2,
+                "4063": 3,
+                "4065": 428
+              },
+              "median_record_gap_ms": 0.0,
+              "max_record_gap_ms": 10.335
+            },
+            "guard_connections_opened": 0
+          },
+          "idle": {
+            "duration_ms": 60005.129,
+            "outbound": {
+              "records": 22,
+              "tls_wire_bytes": 11792,
+              "record_payload_lengths": {
+                "531": 22
+              },
+              "median_record_gap_ms": 74.096,
+              "max_record_gap_ms": 11007.55
+            },
+            "inbound": {
+              "records": 18,
+              "tls_wire_bytes": 9648,
+              "record_payload_lengths": {
+                "531": 18
+              },
+              "median_record_gap_ms": 3.858,
+              "max_record_gap_ms": 11004.481
+            },
+            "guard_connections_opened": 0
+          }
+        },
+        "connections": [
+          {
+            "id": 1,
+            "role": "guard",
+            "opened_ms": 1048.817,
+            "closed_ms": null,
+            "open_at_observation_end": true,
+            "outbound": {
+              "client_hello": {
+                "legacy_version": 771,
+                "session_id_length": 32,
+                "cipher_suites": [
+                  4865,
+                  4867,
+                  4866,
+                  49195,
+                  49199,
+                  52393,
+                  52392,
+                  49196,
+                  49200,
+                  49162,
+                  49161,
+                  49171,
+                  49172,
+                  156,
+                  157,
+                  47,
+                  53
+                ],
+                "compression_methods": [
+                  0
+                ],
+                "extensions": [
+                  65281,
+                  0,
+                  11,
+                  10,
+                  35,
+                  22,
+                  23,
+                  13,
+                  43,
+                  45,
+                  51
+                ],
+                "server_name_present": true,
+                "key_shares": [
+                  {
+                    "group": 4588,
+                    "length": 1216
+                  },
+                  {
+                    "group": 23,
+                    "length": 65
+                  }
+                ],
+                "server_name_length": 13,
+                "server_name_tor_shape": true,
+                "supported_groups": [
+                  4588,
+                  4587,
+                  23,
+                  29,
+                  21
+                ],
+                "signature_algorithms": [
+                  2309,
+                  2310,
+                  2308,
+                  1027,
+                  1283,
+                  1539,
+                  2055,
+                  2056,
+                  2074,
+                  2075,
+                  2076,
+                  2057,
+                  2058,
+                  2059,
+                  2052,
+                  2053,
+                  2054,
+                  1025,
+                  1281,
+                  1537,
+                  771,
+                  769,
+                  770,
+                  1026,
+                  1282,
+                  1538
+                ],
+                "supported_versions": [
+                  772,
+                  771
+                ]
+              }
+            },
+            "inbound": {
+              "client_hello": null
+            }
+          }
+        ],
+        "observation_end_ms": 68216.268,
+        "guard_channels_open_at_end": 1
+      }
+    },
+    {
+      "order": [
+        "c_tor",
+        "veil"
+      ],
+      "c_tor": {
+        "phases": {
+          "preparation": {
+            "start_ms": 0,
+            "end_ms": 7174.056,
+            "warm_request_started_ms": 2084.525,
+            "warm_failures": 0
+          },
+          "single": {
+            "start_ms": 7174.084,
+            "end_ms": 7193.64
+          },
+          "burst": {
+            "start_ms": 7193.642,
+            "end_ms": 8015.22
+          },
+          "bulk": {
+            "start_ms": 8015.223,
+            "end_ms": 8241.995
+          },
+          "idle": {
+            "start_ms": 8241.996,
+            "end_ms": 68247.098
+          }
+        },
+        "requests": {
+          "single": [
+            {
+              "elapsed_ms": 19.541,
+              "request_bytes": 112,
+              "response_bytes": 4156,
+              "payload_bytes": 4096
+            }
+          ],
+          "burst": [
+            {
+              "elapsed_ms": 16.446,
+              "request_bytes": 112,
+              "response_bytes": 4156,
+              "payload_bytes": 4096
+            },
+            {
+              "elapsed_ms": 14.539,
+              "request_bytes": 112,
+              "response_bytes": 4156,
+              "payload_bytes": 4096
+            },
+            {
+              "elapsed_ms": 15.892,
+              "request_bytes": 112,
+              "response_bytes": 4156,
+              "payload_bytes": 4096
+            },
+            {
+              "elapsed_ms": 14.453,
+              "request_bytes": 112,
+              "response_bytes": 4156,
+              "payload_bytes": 4096
+            }
+          ],
+          "bulk": [
+            {
+              "elapsed_ms": 226.706,
+              "request_bytes": 111,
+              "response_bytes": 2097215,
+              "payload_bytes": 2097152
+            }
+          ],
+          "idle": []
+        },
+        "metrics": {
+          "preparation": {
+            "duration_ms": 7174.056,
+            "outbound": {
+              "records": 34,
+              "tls_wire_bytes": 21336,
+              "record_payload_lengths": {
+                "1": 1,
+                "28": 1,
+                "69": 1,
+                "531": 23,
+                "1045": 7,
+                "1540": 1
+              },
+              "median_record_gap_ms": 3.431,
+              "max_record_gap_ms": 996.877
+            },
+            "inbound": {
+              "records": 59,
+              "tls_wire_bytes": 54899,
+              "record_payload_lengths": {
+                "1": 1,
+                "23": 1,
+                "69": 1,
+                "74": 2,
+                "209": 1,
+                "281": 1,
+                "531": 39,
+                "618": 1,
+                "1045": 1,
+                "1210": 1,
+                "1559": 1,
+                "2060": 1,
+                "2073": 1,
+                "2587": 2,
+                "3615": 2,
+                "4065": 3
+              },
+              "median_record_gap_ms": 2.2190000000000003,
+              "max_record_gap_ms": 993.921
+            },
+            "guard_connections_opened": 1
+          },
+          "single": {
+            "duration_ms": 19.556,
+            "outbound": {
+              "records": 2,
+              "tls_wire_bytes": 1072,
+              "record_payload_lengths": {
+                "531": 2
+              },
+              "median_record_gap_ms": 7.753,
+              "max_record_gap_ms": 7.753
+            },
+            "inbound": {
+              "records": 3,
+              "tls_wire_bytes": 5720,
+              "record_payload_lengths": {
+                "531": 1,
+                "1109": 1,
+                "4065": 1
+              },
+              "median_record_gap_ms": 3.7849999999999997,
+              "max_record_gap_ms": 7.515
+            },
+            "guard_connections_opened": 0
+          },
+          "burst": {
+            "duration_ms": 821.578,
+            "outbound": {
+              "records": 9,
+              "tls_wire_bytes": 4824,
+              "record_payload_lengths": {
+                "531": 9
+              },
+              "median_record_gap_ms": 7.231,
+              "max_record_gap_ms": 264.936
+            },
+            "inbound": {
+              "records": 12,
+              "tls_wire_bytes": 22880,
+              "record_payload_lengths": {
+                "531": 4,
+                "1109": 1,
+                "1559": 3,
+                "3615": 3,
+                "4065": 1
+              },
+              "median_record_gap_ms": 7.674,
+              "max_record_gap_ms": 261.989
+            },
+            "guard_connections_opened": 0
+          },
+          "bulk": {
+            "duration_ms": 226.772,
+            "outbound": {
+              "records": 115,
+              "tls_wire_bytes": 73462,
+              "record_payload_lengths": {
+                "531": 96,
+                "1045": 15,
+                "1559": 4
+              },
+              "median_record_gap_ms": 1.4595,
+              "max_record_gap_ms": 9.75
+            },
+            "inbound": {
+              "records": 664,
+              "tls_wire_bytes": 2194996,
+              "record_payload_lengths": {
+                "81": 1,
+                "145": 3,
+                "209": 3,
+                "273": 65,
+                "337": 1,
+                "401": 2,
+                "465": 1,
+                "529": 25,
+                "531": 4,
+                "595": 1,
+                "659": 1,
+                "723": 2,
+                "851": 2,
+                "915": 1,
+                "979": 3,
+                "1045": 1,
+                "1237": 2,
+                "1365": 1,
+                "1429": 3,
+                "1493": 4,
+                "1559": 1,
+                "1751": 1,
+                "1943": 1,
+                "2073": 2,
+                "2201": 3,
+                "2457": 1,
+                "2521": 1,
+                "2587": 1,
+                "2779": 3,
+                "3101": 1,
+                "3165": 2,
+                "3229": 2,
+                "3421": 1,
+                "3615": 22,
+                "3679": 1,
+                "3807": 5,
+                "3809": 50,
+                "3999": 1,
+                "4063": 2,
+                "4065": 437
+              },
+              "median_record_gap_ms": 0.0,
+              "max_record_gap_ms": 9.71
+            },
+            "guard_connections_opened": 0
+          },
+          "idle": {
+            "duration_ms": 60005.102,
+            "outbound": {
+              "records": 19,
+              "tls_wire_bytes": 10184,
+              "record_payload_lengths": {
+                "531": 19
+              },
+              "median_record_gap_ms": 3.7670000000000003,
+              "max_record_gap_ms": 11008.174
+            },
+            "inbound": {
+              "records": 19,
+              "tls_wire_bytes": 10184,
+              "record_payload_lengths": {
+                "531": 19
+              },
+              "median_record_gap_ms": 7.168,
+              "max_record_gap_ms": 7054.377
+            },
+            "guard_connections_opened": 0
+          }
+        },
+        "connections": [
+          {
+            "id": 1,
+            "role": "guard",
+            "opened_ms": 1030.003,
+            "closed_ms": null,
+            "open_at_observation_end": true,
+            "outbound": {
+              "client_hello": {
+                "legacy_version": 771,
+                "session_id_length": 32,
+                "cipher_suites": [
+                  4865,
+                  4867,
+                  4866,
+                  49195,
+                  49199,
+                  52393,
+                  52392,
+                  49196,
+                  49200,
+                  49162,
+                  49161,
+                  49171,
+                  49172,
+                  156,
+                  157,
+                  47,
+                  53
+                ],
+                "compression_methods": [
+                  0
+                ],
+                "extensions": [
+                  65281,
+                  0,
+                  11,
+                  10,
+                  35,
+                  22,
+                  23,
+                  13,
+                  43,
+                  45,
+                  51
+                ],
+                "server_name_present": true,
+                "key_shares": [
+                  {
+                    "group": 4588,
+                    "length": 1216
+                  },
+                  {
+                    "group": 23,
+                    "length": 65
+                  }
+                ],
+                "server_name_length": 13,
+                "server_name_tor_shape": true,
+                "supported_groups": [
+                  4588,
+                  4587,
+                  23,
+                  29,
+                  21
+                ],
+                "signature_algorithms": [
+                  2309,
+                  2310,
+                  2308,
+                  1027,
+                  1283,
+                  1539,
+                  2055,
+                  2056,
+                  2074,
+                  2075,
+                  2076,
+                  2057,
+                  2058,
+                  2059,
+                  2052,
+                  2053,
+                  2054,
+                  1025,
+                  1281,
+                  1537,
+                  771,
+                  769,
+                  770,
+                  1026,
+                  1282,
+                  1538
+                ],
+                "supported_versions": [
+                  772,
+                  771
+                ]
+              }
+            },
+            "inbound": {
+              "client_hello": null
+            }
+          }
+        ],
+        "observation_end_ms": 68247.196,
+        "guard_channels_open_at_end": 1
+      },
+      "veil": {
+        "phases": {
+          "preparation": {
+            "start_ms": 0,
+            "end_ms": 5202.26,
+            "warm_request_started_ms": 108.697,
+            "warm_failures": 0
+          },
+          "single": {
+            "start_ms": 5202.315,
+            "end_ms": 5216.691
+          },
+          "burst": {
+            "start_ms": 5216.695,
+            "end_ms": 6029.523
+          },
+          "bulk": {
+            "start_ms": 6029.525,
+            "end_ms": 6179.302
+          },
+          "idle": {
+            "start_ms": 6179.304,
+            "end_ms": 66184.485
+          }
+        },
+        "requests": {
+          "single": [
+            {
+              "elapsed_ms": 14.354,
+              "request_bytes": 112,
+              "response_bytes": 4156,
+              "payload_bytes": 4096
+            }
+          ],
+          "burst": [
+            {
+              "elapsed_ms": 13.375,
+              "request_bytes": 112,
+              "response_bytes": 4156,
+              "payload_bytes": 4096
+            },
+            {
+              "elapsed_ms": 14.817,
+              "request_bytes": 112,
+              "response_bytes": 4156,
+              "payload_bytes": 4096
+            },
+            {
+              "elapsed_ms": 14.838,
+              "request_bytes": 112,
+              "response_bytes": 4156,
+              "payload_bytes": 4096
+            },
+            {
+              "elapsed_ms": 15.377,
+              "request_bytes": 112,
+              "response_bytes": 4156,
+              "payload_bytes": 4096
+            }
+          ],
+          "bulk": [
+            {
+              "elapsed_ms": 149.711,
+              "request_bytes": 111,
+              "response_bytes": 2097215,
+              "payload_bytes": 2097152
+            }
+          ],
+          "idle": []
+        },
+        "metrics": {
+          "preparation": {
+            "duration_ms": 5202.26,
+            "outbound": {
+              "records": 44,
+              "tls_wire_bytes": 22565,
+              "record_payload_lengths": {
+                "1": 2,
+                "26": 2,
+                "69": 2,
+                "531": 36,
+                "1514": 1,
+                "1523": 1
+              },
+              "median_record_gap_ms": 1.503,
+              "max_record_gap_ms": 69.141
+            },
+            "inbound": {
+              "records": 62,
+              "tls_wire_bytes": 59224,
+              "record_payload_lengths": {
+                "1": 2,
+                "19": 1,
+                "23": 2,
+                "69": 2,
+                "74": 4,
+                "281": 2,
+                "531": 31,
+                "595": 1,
+                "618": 2,
+                "1045": 2,
+                "1109": 1,
+                "1210": 2,
+                "2060": 2,
+                "3101": 2,
+                "3293": 1,
+                "4065": 5
+              },
+              "median_record_gap_ms": 1.562,
+              "max_record_gap_ms": 70.766
+            },
+            "guard_connections_opened": 2
+          },
+          "single": {
+            "duration_ms": 14.376,
+            "outbound": {
+              "records": 2,
+              "tls_wire_bytes": 1072,
+              "record_payload_lengths": {
+                "531": 2
+              },
+              "median_record_gap_ms": 5.534,
+              "max_record_gap_ms": 5.534
+            },
+            "inbound": {
+              "records": 3,
+              "tls_wire_bytes": 5720,
+              "record_payload_lengths": {
+                "531": 1,
+                "1109": 1,
+                "4065": 1
+              },
+              "median_record_gap_ms": 3.3315,
+              "max_record_gap_ms": 6.663
+            },
+            "guard_connections_opened": 0
+          },
+          "burst": {
+            "duration_ms": 812.828,
+            "outbound": {
+              "records": 8,
+              "tls_wire_bytes": 4288,
+              "record_payload_lengths": {
+                "531": 8
+              },
+              "median_record_gap_ms": 6.871,
+              "max_record_gap_ms": 261.18
+            },
+            "inbound": {
+              "records": 12,
+              "tls_wire_bytes": 22880,
+              "record_payload_lengths": {
+                "531": 4,
+                "1109": 4,
+                "4065": 4
+              },
+              "median_record_gap_ms": 6.863,
+              "max_record_gap_ms": 259.905
+            },
+            "guard_connections_opened": 0
+          },
+          "bulk": {
+            "duration_ms": 149.777,
+            "outbound": {
+              "records": 118,
+              "tls_wire_bytes": 68388,
+              "record_payload_lengths": {
+                "531": 108,
+                "1045": 10
+              },
+              "median_record_gap_ms": 1.117,
+              "max_record_gap_ms": 11.811
+            },
+            "inbound": {
+              "records": 662,
+              "tls_wire_bytes": 2194438,
+              "record_payload_lengths": {
+                "273": 72,
+                "401": 1,
+                "529": 38,
+                "531": 1,
+                "723": 2,
+                "979": 5,
+                "1109": 2,
+                "1173": 1,
+                "1237": 1,
+                "1365": 1,
+                "1429": 4,
+                "1559": 1,
+                "1943": 1,
+                "2007": 1,
+                "2073": 1,
+                "2393": 2,
+                "2715": 1,
+                "2779": 2,
+                "3421": 1,
+                "3485": 2,
+                "3549": 1,
+                "3615": 11,
+                "3807": 1,
+                "3809": 58,
+                "4063": 1,
+                "4065": 450
+              },
+              "median_record_gap_ms": 0.0,
+              "max_record_gap_ms": 7.877
+            },
+            "guard_connections_opened": 0
+          },
+          "idle": {
+            "duration_ms": 60005.181,
+            "outbound": {
+              "records": 8,
+              "tls_wire_bytes": 4288,
+              "record_payload_lengths": {
+                "531": 8
+              },
+              "median_record_gap_ms": 6892.719,
+              "max_record_gap_ms": 9277.766
+            },
+            "inbound": {
+              "records": 3,
+              "tls_wire_bytes": 1608,
+              "record_payload_lengths": {
+                "531": 3
+              },
+              "median_record_gap_ms": 8865.897500000001,
+              "max_record_gap_ms": 11075.308
+            },
+            "guard_connections_opened": 0
+          }
+        },
+        "connections": [
+          {
+            "id": 1,
+            "role": "guard",
+            "opened_ms": 25.411,
+            "closed_ms": 43.451,
+            "open_at_observation_end": false,
+            "outbound": {
+              "client_hello": {
+                "legacy_version": 771,
+                "session_id_length": 32,
+                "cipher_suites": [
+                  49195,
+                  49199,
+                  49196,
+                  49200,
+                  52393,
+                  52392,
+                  49161,
+                  49171,
+                  49162,
+                  49172,
+                  4865,
+                  4866,
+                  4867
+                ],
+                "compression_methods": [
+                  0
+                ],
+                "extensions": [
+                  0,
+                  11,
+                  65281,
+                  23,
+                  18,
+                  5,
+                  10,
+                  13,
+                  50,
+                  43,
+                  51
+                ],
+                "server_name_present": true,
+                "key_shares": [
+                  {
+                    "group": 4588,
+                    "length": 1216
+                  },
+                  {
+                    "group": 29,
+                    "length": 32
+                  }
+                ],
+                "server_name_length": 17,
+                "server_name_tor_shape": true,
+                "supported_groups": [
+                  4588,
+                  4587,
+                  29,
+                  23
+                ],
+                "signature_algorithms": [
+                  2308,
+                  2309,
+                  2310,
+                  2052,
+                  1027,
+                  2055,
+                  2053,
+                  2054,
+                  1025,
+                  1281,
+                  1537,
+                  1283,
+                  1539,
+                  513,
+                  515
+                ],
+                "supported_versions": [
+                  772,
+                  771
+                ]
+              }
+            },
+            "inbound": {
+              "client_hello": null
+            }
+          },
+          {
+            "id": 2,
+            "role": "guard",
+            "opened_ms": 111.856,
+            "closed_ms": null,
+            "open_at_observation_end": true,
+            "outbound": {
+              "client_hello": {
+                "legacy_version": 771,
+                "session_id_length": 32,
+                "cipher_suites": [
+                  49195,
+                  49199,
+                  49196,
+                  49200,
+                  52393,
+                  52392,
+                  49161,
+                  49171,
+                  49162,
+                  49172,
+                  4865,
+                  4866,
+                  4867
+                ],
+                "compression_methods": [
+                  0
+                ],
+                "extensions": [
+                  0,
+                  11,
+                  65281,
+                  23,
+                  18,
+                  5,
+                  10,
+                  13,
+                  50,
+                  43,
+                  51
+                ],
+                "server_name_present": true,
+                "key_shares": [
+                  {
+                    "group": 4588,
+                    "length": 1216
+                  },
+                  {
+                    "group": 29,
+                    "length": 32
+                  }
+                ],
+                "server_name_length": 26,
+                "server_name_tor_shape": true,
+                "supported_groups": [
+                  4588,
+                  4587,
+                  29,
+                  23
+                ],
+                "signature_algorithms": [
+                  2308,
+                  2309,
+                  2310,
+                  2052,
+                  1027,
+                  2055,
+                  2053,
+                  2054,
+                  1025,
+                  1281,
+                  1537,
+                  1283,
+                  1539,
+                  513,
+                  515
+                ],
+                "supported_versions": [
+                  772,
+                  771
+                ]
+              }
+            },
+            "inbound": {
+              "client_hello": null
+            }
+          }
+        ],
+        "observation_end_ms": 66184.605,
+        "guard_channels_open_at_end": 1
+      }
+    },
+    {
+      "order": [
+        "veil",
+        "c_tor"
+      ],
+      "veil": {
+        "phases": {
+          "preparation": {
+            "start_ms": 0,
+            "end_ms": 5194.841,
+            "warm_request_started_ms": 103.966,
+            "warm_failures": 0
+          },
+          "single": {
+            "start_ms": 5194.88,
+            "end_ms": 5214.34
+          },
+          "burst": {
+            "start_ms": 5214.342,
+            "end_ms": 6043.362
+          },
+          "bulk": {
+            "start_ms": 6043.365,
+            "end_ms": 6201.422
+          },
+          "idle": {
+            "start_ms": 6201.423,
+            "end_ms": 66206.228
+          }
+        },
+        "requests": {
+          "single": [
+            {
+              "elapsed_ms": 19.419,
+              "request_bytes": 112,
+              "response_bytes": 4156,
+              "payload_bytes": 4096
+            }
+          ],
+          "burst": [
+            {
+              "elapsed_ms": 13.59,
+              "request_bytes": 112,
+              "response_bytes": 4156,
+              "payload_bytes": 4096
+            },
+            {
+              "elapsed_ms": 16.937,
+              "request_bytes": 112,
+              "response_bytes": 4156,
+              "payload_bytes": 4096
+            },
+            {
+              "elapsed_ms": 20.009,
+              "request_bytes": 112,
+              "response_bytes": 4156,
+              "payload_bytes": 4096
+            },
+            {
+              "elapsed_ms": 15.621,
+              "request_bytes": 112,
+              "response_bytes": 4156,
+              "payload_bytes": 4096
+            }
+          ],
+          "bulk": [
+            {
+              "elapsed_ms": 157.998,
+              "request_bytes": 111,
+              "response_bytes": 2097215,
+              "payload_bytes": 2097152
+            }
+          ],
+          "idle": []
+        },
+        "metrics": {
+          "preparation": {
+            "duration_ms": 5194.841,
+            "outbound": {
+              "records": 44,
+              "tls_wire_bytes": 22559,
+              "record_payload_lengths": {
+                "1": 2,
+                "26": 2,
+                "69": 2,
+                "531": 36,
+                "1510": 1,
+                "1521": 1
+              },
+              "median_record_gap_ms": 1.591,
+              "max_record_gap_ms": 78.843
+            },
+            "inbound": {
+              "records": 63,
+              "tls_wire_bytes": 59246,
+              "record_payload_lengths": {
+                "1": 2,
+                "19": 1,
+                "23": 2,
+                "69": 2,
+                "74": 4,
+                "281": 2,
+                "531": 32,
+                "595": 1,
+                "618": 2,
+                "1045": 2,
+                "1109": 1,
+                "1210": 2,
+                "2060": 2,
+                "2779": 1,
+                "3101": 2,
+                "4065": 5
+              },
+              "median_record_gap_ms": 1.5955,
+              "max_record_gap_ms": 80.293
+            },
+            "guard_connections_opened": 2
+          },
+          "single": {
+            "duration_ms": 19.46,
+            "outbound": {
+              "records": 2,
+              "tls_wire_bytes": 1072,
+              "record_payload_lengths": {
+                "531": 2
+              },
+              "median_record_gap_ms": 7.45,
+              "max_record_gap_ms": 7.45
+            },
+            "inbound": {
+              "records": 3,
+              "tls_wire_bytes": 5720,
+              "record_payload_lengths": {
+                "531": 1,
+                "1109": 1,
+                "4065": 1
+              },
+              "median_record_gap_ms": 5.015,
+              "max_record_gap_ms": 10.03
+            },
+            "guard_connections_opened": 0
+          },
+          "burst": {
+            "duration_ms": 829.02,
+            "outbound": {
+              "records": 8,
+              "tls_wire_bytes": 4288,
+              "record_payload_lengths": {
+                "531": 8
+              },
+              "median_record_gap_ms": 6.674,
+              "max_record_gap_ms": 267.152
+            },
+            "inbound": {
+              "records": 12,
+              "tls_wire_bytes": 22880,
+              "record_payload_lengths": {
+                "531": 4,
+                "1109": 2,
+                "1559": 2,
+                "3615": 2,
+                "4065": 2
+              },
+              "median_record_gap_ms": 6.919,
+              "max_record_gap_ms": 265.404
+            },
+            "guard_connections_opened": 0
+          },
+          "bulk": {
+            "duration_ms": 158.057,
+            "outbound": {
+              "records": 122,
+              "tls_wire_bytes": 68476,
+              "record_payload_lengths": {
+                "531": 116,
+                "1045": 6
+              },
+              "median_record_gap_ms": 1.035,
+              "max_record_gap_ms": 12.898
+            },
+            "inbound": {
+              "records": 660,
+              "tls_wire_bytes": 2194908,
+              "record_payload_lengths": {
+                "81": 1,
+                "209": 3,
+                "273": 69,
+                "337": 1,
+                "401": 1,
+                "529": 38,
+                "531": 1,
+                "979": 4,
+                "1045": 2,
+                "1365": 1,
+                "1429": 1,
+                "1751": 1,
+                "1879": 1,
+                "2201": 1,
+                "2265": 2,
+                "2457": 1,
+                "2587": 3,
+                "2715": 1,
+                "2907": 1,
+                "3101": 2,
+                "3165": 1,
+                "3293": 1,
+                "3421": 1,
+                "3485": 2,
+                "3549": 2,
+                "3615": 10,
+                "3743": 1,
+                "3807": 1,
+                "3809": 58,
+                "3935": 1,
+                "3999": 1,
+                "4063": 2,
+                "4065": 444
+              },
+              "median_record_gap_ms": 0.0,
+              "max_record_gap_ms": 10.198
+            },
+            "guard_connections_opened": 0
+          },
+          "idle": {
+            "duration_ms": 60004.805,
+            "outbound": {
+              "records": 10,
+              "tls_wire_bytes": 5360,
+              "record_payload_lengths": {
+                "531": 10
+              },
+              "median_record_gap_ms": 4259.233,
+              "max_record_gap_ms": 8194.523
+            },
+            "inbound": {
+              "records": 3,
+              "tls_wire_bytes": 1608,
+              "record_payload_lengths": {
+                "531": 3
+              },
+              "median_record_gap_ms": 11882.494999999999,
+              "max_record_gap_ms": 17229.277
+            },
+            "guard_connections_opened": 0
+          }
+        },
+        "connections": [
+          {
+            "id": 1,
+            "role": "guard",
+            "opened_ms": 10.72,
+            "closed_ms": 28.422,
+            "open_at_observation_end": false,
+            "outbound": {
+              "client_hello": {
+                "legacy_version": 771,
+                "session_id_length": 32,
+                "cipher_suites": [
+                  49195,
+                  49199,
+                  49196,
+                  49200,
+                  52393,
+                  52392,
+                  49161,
+                  49171,
+                  49162,
+                  49172,
+                  4865,
+                  4866,
+                  4867
+                ],
+                "compression_methods": [
+                  0
+                ],
+                "extensions": [
+                  0,
+                  11,
+                  65281,
+                  23,
+                  18,
+                  5,
+                  10,
+                  13,
+                  50,
+                  43,
+                  51
+                ],
+                "server_name_present": true,
+                "key_shares": [
+                  {
+                    "group": 4588,
+                    "length": 1216
+                  },
+                  {
+                    "group": 29,
+                    "length": 32
+                  }
+                ],
+                "server_name_length": 24,
+                "server_name_tor_shape": true,
+                "supported_groups": [
+                  4588,
+                  4587,
+                  29,
+                  23
+                ],
+                "signature_algorithms": [
+                  2308,
+                  2309,
+                  2310,
+                  2052,
+                  1027,
+                  2055,
+                  2053,
+                  2054,
+                  1025,
+                  1281,
+                  1537,
+                  1283,
+                  1539,
+                  513,
+                  515
+                ],
+                "supported_versions": [
+                  772,
+                  771
+                ]
+              }
+            },
+            "inbound": {
+              "client_hello": null
+            }
+          },
+          {
+            "id": 2,
+            "role": "guard",
+            "opened_ms": 106.564,
+            "closed_ms": null,
+            "open_at_observation_end": true,
+            "outbound": {
+              "client_hello": {
+                "legacy_version": 771,
+                "session_id_length": 32,
+                "cipher_suites": [
+                  49195,
+                  49199,
+                  49196,
+                  49200,
+                  52393,
+                  52392,
+                  49161,
+                  49171,
+                  49162,
+                  49172,
+                  4865,
+                  4866,
+                  4867
+                ],
+                "compression_methods": [
+                  0
+                ],
+                "extensions": [
+                  0,
+                  11,
+                  65281,
+                  23,
+                  18,
+                  5,
+                  10,
+                  13,
+                  50,
+                  43,
+                  51
+                ],
+                "server_name_present": true,
+                "key_shares": [
+                  {
+                    "group": 4588,
+                    "length": 1216
+                  },
+                  {
+                    "group": 29,
+                    "length": 32
+                  }
+                ],
+                "server_name_length": 13,
+                "server_name_tor_shape": true,
+                "supported_groups": [
+                  4588,
+                  4587,
+                  29,
+                  23
+                ],
+                "signature_algorithms": [
+                  2308,
+                  2309,
+                  2310,
+                  2052,
+                  1027,
+                  2055,
+                  2053,
+                  2054,
+                  1025,
+                  1281,
+                  1537,
+                  1283,
+                  1539,
+                  513,
+                  515
+                ],
+                "supported_versions": [
+                  772,
+                  771
+                ]
+              }
+            },
+            "inbound": {
+              "client_hello": null
+            }
+          }
+        ],
+        "observation_end_ms": 66206.358,
+        "guard_channels_open_at_end": 1
+      },
+      "c_tor": {
+        "phases": {
+          "preparation": {
+            "start_ms": 0,
+            "end_ms": 7158.872,
+            "warm_request_started_ms": 2086.267,
+            "warm_failures": 0
+          },
+          "single": {
+            "start_ms": 7158.93,
+            "end_ms": 7173.873
+          },
+          "burst": {
+            "start_ms": 7173.877,
+            "end_ms": 7984.842
+          },
+          "bulk": {
+            "start_ms": 7984.847,
+            "end_ms": 8174.288
+          },
+          "idle": {
+            "start_ms": 8174.289,
+            "end_ms": 68179.428
+          }
+        },
+        "requests": {
+          "single": [
+            {
+              "elapsed_ms": 14.899,
+              "request_bytes": 112,
+              "response_bytes": 4156,
+              "payload_bytes": 4096
+            }
+          ],
+          "burst": [
+            {
+              "elapsed_ms": 13.879,
+              "request_bytes": 112,
+              "response_bytes": 4156,
+              "payload_bytes": 4096
+            },
+            {
+              "elapsed_ms": 12.99,
+              "request_bytes": 112,
+              "response_bytes": 4156,
+              "payload_bytes": 4096
+            },
+            {
+              "elapsed_ms": 13.977,
+              "request_bytes": 112,
+              "response_bytes": 4156,
+              "payload_bytes": 4096
+            },
+            {
+              "elapsed_ms": 14.322,
+              "request_bytes": 112,
+              "response_bytes": 4156,
+              "payload_bytes": 4096
+            }
+          ],
+          "bulk": [
+            {
+              "elapsed_ms": 189.333,
+              "request_bytes": 111,
+              "response_bytes": 2097215,
+              "payload_bytes": 2097152
+            }
+          ],
+          "idle": []
+        },
+        "metrics": {
+          "preparation": {
+            "duration_ms": 7158.872,
+            "outbound": {
+              "records": 33,
+              "tls_wire_bytes": 21330,
+              "record_payload_lengths": {
+                "1": 1,
+                "28": 1,
+                "69": 1,
+                "531": 21,
+                "1045": 8,
+                "1556": 1
+              },
+              "median_record_gap_ms": 3.6595,
+              "max_record_gap_ms": 997.167
+            },
+            "inbound": {
+              "records": 56,
+              "tls_wire_bytes": 54319,
+              "record_payload_lengths": {
+                "1": 1,
+                "23": 1,
+                "69": 1,
+                "74": 2,
+                "273": 1,
+                "281": 1,
+                "531": 34,
+                "618": 1,
+                "1045": 3,
+                "1109": 1,
+                "1210": 1,
+                "2060": 1,
+                "2073": 2,
+                "2587": 1,
+                "4065": 5
+              },
+              "median_record_gap_ms": 2.386,
+              "max_record_gap_ms": 994.309
+            },
+            "guard_connections_opened": 1
+          },
+          "single": {
+            "duration_ms": 14.943,
+            "outbound": {
+              "records": 2,
+              "tls_wire_bytes": 1072,
+              "record_payload_lengths": {
+                "531": 2
+              },
+              "median_record_gap_ms": 5.744,
+              "max_record_gap_ms": 5.744
+            },
+            "inbound": {
+              "records": 3,
+              "tls_wire_bytes": 5720,
+              "record_payload_lengths": {
+                "531": 1,
+                "1109": 1,
+                "4065": 1
+              },
+              "median_record_gap_ms": 3.471,
+              "max_record_gap_ms": 6.942
+            },
+            "guard_connections_opened": 0
+          },
+          "burst": {
+            "duration_ms": 810.965,
+            "outbound": {
+              "records": 9,
+              "tls_wire_bytes": 4824,
+              "record_payload_lengths": {
+                "531": 9
+              },
+              "median_record_gap_ms": 6.5335,
+              "max_record_gap_ms": 261.612
+            },
+            "inbound": {
+              "records": 12,
+              "tls_wire_bytes": 22880,
+              "record_payload_lengths": {
+                "531": 4,
+                "1109": 4,
+                "4065": 4
+              },
+              "median_record_gap_ms": 6.69,
+              "max_record_gap_ms": 259.637
+            },
+            "guard_connections_opened": 0
+          },
+          "bulk": {
+            "duration_ms": 189.441,
+            "outbound": {
+              "records": 106,
+              "tls_wire_bytes": 73778,
+              "record_payload_lengths": {
+                "531": 74,
+                "1045": 31,
+                "1559": 1
+              },
+              "median_record_gap_ms": 1.394,
+              "max_record_gap_ms": 17.436
+            },
+            "inbound": {
+              "records": 668,
+              "tls_wire_bytes": 2195084,
+              "record_payload_lengths": {
+                "81": 1,
+                "209": 1,
+                "273": 72,
+                "337": 1,
+                "465": 2,
+                "529": 32,
+                "531": 5,
+                "595": 1,
+                "723": 1,
+                "851": 1,
+                "915": 2,
+                "979": 7,
+                "1045": 1,
+                "1109": 1,
+                "1237": 1,
+                "1493": 1,
+                "1559": 1,
+                "1687": 2,
+                "2073": 1,
+                "2137": 1,
+                "2265": 1,
+                "2393": 1,
+                "2457": 1,
+                "2587": 1,
+                "2651": 3,
+                "2779": 2,
+                "2907": 1,
+                "3101": 1,
+                "3165": 1,
+                "3421": 2,
+                "3615": 19,
+                "3743": 1,
+                "3809": 54,
+                "3999": 3,
+                "4065": 442
+              },
+              "median_record_gap_ms": 0.0,
+              "max_record_gap_ms": 17.281
+            },
+            "guard_connections_opened": 0
+          },
+          "idle": {
+            "duration_ms": 60005.139,
+            "outbound": {
+              "records": 18,
+              "tls_wire_bytes": 9648,
+              "record_payload_lengths": {
+                "531": 18
+              },
+              "median_record_gap_ms": 3.777,
+              "max_record_gap_ms": 11018.095
+            },
+            "inbound": {
+              "records": 20,
+              "tls_wire_bytes": 10720,
+              "record_payload_lengths": {
+                "531": 20
+              },
+              "median_record_gap_ms": 8.004,
+              "max_record_gap_ms": 11009.863
+            },
+            "guard_connections_opened": 0
+          }
+        },
+        "connections": [
+          {
+            "id": 1,
+            "role": "guard",
+            "opened_ms": 1029.574,
+            "closed_ms": null,
+            "open_at_observation_end": true,
+            "outbound": {
+              "client_hello": {
+                "legacy_version": 771,
+                "session_id_length": 32,
+                "cipher_suites": [
+                  4865,
+                  4867,
+                  4866,
+                  49195,
+                  49199,
+                  52393,
+                  52392,
+                  49196,
+                  49200,
+                  49162,
+                  49161,
+                  49171,
+                  49172,
+                  156,
+                  157,
+                  47,
+                  53
+                ],
+                "compression_methods": [
+                  0
+                ],
+                "extensions": [
+                  65281,
+                  0,
+                  11,
+                  10,
+                  35,
+                  22,
+                  23,
+                  13,
+                  43,
+                  45,
+                  51
+                ],
+                "server_name_present": true,
+                "key_shares": [
+                  {
+                    "group": 4588,
+                    "length": 1216
+                  },
+                  {
+                    "group": 23,
+                    "length": 65
+                  }
+                ],
+                "server_name_length": 29,
+                "server_name_tor_shape": true,
+                "supported_groups": [
+                  4588,
+                  4587,
+                  23,
+                  29,
+                  21
+                ],
+                "signature_algorithms": [
+                  2309,
+                  2310,
+                  2308,
+                  1027,
+                  1283,
+                  1539,
+                  2055,
+                  2056,
+                  2074,
+                  2075,
+                  2076,
+                  2057,
+                  2058,
+                  2059,
+                  2052,
+                  2053,
+                  2054,
+                  1025,
+                  1281,
+                  1537,
+                  771,
+                  769,
+                  770,
+                  1026,
+                  1282,
+                  1538
+                ],
+                "supported_versions": [
+                  772,
+                  771
+                ]
+              }
+            },
+            "inbound": {
+              "client_hello": null
+            }
+          }
+        ],
+        "observation_end_ms": 68179.56,
+        "guard_channels_open_at_end": 1
+      }
+    }
+  ],
+  "record_trace_archive": "workload_batch_2026-09-21.traces.json.gz"
+}

@@ -94,7 +94,7 @@ func (c *Circuit) begin(network, address string) ([]byte, error) {
 		return nil, errors.New("stream port must match circuit selection")
 	}
 	host = strings.ToLower(host)
-	if c.endHop.Load() == 3 {
+	if int(c.endHop.Load()) == c.relayEnd+1 {
 		c.mu.Lock()
 		ok := c.hs != nil && c.hs.stage == 3 && strings.TrimSuffix(host, ".") == c.hs.host
 		c.mu.Unlock()
@@ -176,21 +176,8 @@ func (m *streamMux) run() {
 				return
 			case msg := <-m.controls:
 				ctx, cancel := context.WithTimeout(m.c.ctx, 30*time.Second)
-				_, err := m.c.send(ctx, int(m.c.endHop.Load()), msg, func(_ *cell.RelayMessage) error {
-					if msg.Command != cell.RelaySendme || msg.StreamID == 0 {
-						return nil
-					}
-					m.mu.Lock()
-					defer m.mu.Unlock()
-					if m.streams[msg.StreamID] == nil {
-						return net.ErrClosed
-					}
-					return nil
-				}, nil)
+				err := m.sendControls(ctx, msg)
 				cancel()
-				if errors.Is(err, net.ErrClosed) {
-					continue
-				}
 				if err != nil {
 					m.c.shutdown(err)
 					return

@@ -202,7 +202,7 @@ func TestReceiveCancellationDoesNotClose(t *testing.T) {
 
 func TestRejectOpenChannelMessages(t *testing.T) {
 	for _, frame := range []cell.Cell{
-		{Command: cell.Certs}, {Command: cell.AuthChallenge}, {Command: cell.NetInfo},
+		{Command: cell.Certs}, {Command: cell.AuthChallenge}, {Command: cell.NetInfo}, {Command: cell.PaddingNegotiate},
 		{Command: cell.Create2, CircuitID: 0x80000001}, {Command: cell.Relay, CircuitID: 1},
 		{Command: 222},
 	} {

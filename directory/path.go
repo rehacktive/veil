@@ -16,7 +16,19 @@ func eligible(r Relay) bool {
 	return r.HasFlag("Running") && r.HasFlag("Valid") && r.HasFlag("Fast") && !r.HasFlag("NoEdConsensus") && r.descriptor.ed25519 != ([32]byte{}) && (p.has("Link", 4) || p.has("Link", 5)) && p.has("Relay", 2)
 }
 
-type Path struct{ Guard, Middle, Exit Relay }
+type Path struct {
+	Guard, Middle, Exit Relay
+	// ExtraMiddle follows Middle on four-relay onion paths. Middle is the L2
+	// vanguard on these paths; Exit is the onion endpoint, not an internet exit.
+	ExtraMiddle *Relay
+}
+
+func (p Path) Relays() []Relay {
+	if p.ExtraMiddle != nil {
+		return []Relay{p.Guard, p.Middle, *p.ExtraMiddle, p.Exit}
+	}
+	return []Relay{p.Guard, p.Middle, p.Exit}
+}
 
 // SelectPath enforces family and subnet separation for all hops and checks the
 // requested IP family's exit-port summary. Summaries do not guarantee that an
@@ -76,7 +88,7 @@ func (s *Snapshot) SelectPathWithGuard(guard Relay, port uint16, ipv6 bool, now 
 	if err != nil {
 		return Path{}, err
 	}
-	return Path{guard, middle, exit}, nil
+	return Path{Guard: guard, Middle: middle, Exit: exit}, nil
 }
 func conflict(a, b Relay) bool {
 	if a.Identity() == b.Identity() || a.descriptor.ed25519 == b.descriptor.ed25519 {

@@ -7,13 +7,20 @@ import (
 	"crypto/cipher"
 	"crypto/sha3"
 	"io"
+	"strconv"
 	"testing"
 	"time"
 	"veil/cell"
 )
 
 func TestServiceIncomingStreamsAndFlowControl(t *testing.T) {
-	c, n, peer := streamCircuit(t, nil)
+	for _, count := range []int{3, 4} {
+		t.Run(strconv.Itoa(count), func(t *testing.T) { testServiceIncomingStreams(t, count) })
+	}
+}
+
+func testServiceIncomingStreams(t *testing.T, count int) {
+	c, n, peer := streamCircuitHops(t, nil, count)
 	c.mu.Lock()
 	c.hs = &onionCircuit{purpose: OnionServiceRendezvous}
 	c.mu.Unlock()
@@ -25,7 +32,7 @@ func TestServiceIncomingStreamsAndFlowControl(t *testing.T) {
 	original := n.stream
 	n.stream = func(m cell.RelayMessage, hop int) error {
 		if m.Command == cell.RelayRendezvous1 {
-			if hop != 2 || len(m.Data) != 84 {
+			if hop != count-1 || len(m.Data) != 84 {
 				return ErrProtocol
 			}
 			f, _ := aes.NewCipher(keys[96:])
@@ -35,7 +42,7 @@ func TestServiceIncomingStreamsAndFlowControl(t *testing.T) {
 			l.bd.Write(keys[:32])
 			n.layers = append(n.layers, l)
 			// Arrive immediately, before JoinService has returned to the application.
-			return n.emit(3, cell.RelayMessage{Command: cell.RelayBegin, StreamID: 7, Data: []byte(":80\x00")})
+			return n.emit(count, cell.RelayMessage{Command: cell.RelayBegin, StreamID: 7, Data: []byte(":80\x00")})
 		}
 		if m.Command == cell.RelayConnected {
 			return nil

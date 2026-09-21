@@ -11,6 +11,7 @@ import (
 	"sort"
 	"sync"
 	"time"
+	"veil/channel"
 )
 
 // GuardStore implements the default, unrestricted sampled/confirmed/primary
@@ -18,17 +19,20 @@ import (
 // Circuit builders must use Select and report outcomes through GuardAttempt;
 // Guard and SelectPath only preview a primary guard for offline path planning.
 type GuardStore struct {
-	path         string
-	mu           sync.Mutex
-	loaded       bool
-	state        guardState
-	runtime      map[Fingerprint]*guardRuntime
-	primary      []Fingerprint
-	next         uint64
-	attempts     map[uint64]*GuardAttempt
-	lastInternet time.Time
-	params       guardParams
-	poisoned     error
+	path          string
+	mu            sync.Mutex
+	loaded        bool
+	state         guardState
+	runtime       map[Fingerprint]*guardRuntime
+	primary       []Fingerprint
+	next          uint64
+	attempts      map[uint64]*GuardAttempt
+	lastInternet  time.Time
+	params        guardParams
+	poisoned      error
+	paddingBudget PaddingBudget
+	linkPadding   channel.PaddingPolicy
+	vanguards     []vanguardRecord // Vanguards-Lite is intentionally memory-only.
 }
 type guardRecord struct {
 	RSA            Fingerprint
@@ -266,6 +270,9 @@ func (g *GuardStore) update(s *Snapshot, now time.Time, directory bool) (err err
 	defer func() {
 		if err != nil {
 			g.poisoned = err
+		} else {
+			g.paddingBudget.update(s)
+			g.updateLinkPadding(s)
 		}
 	}()
 	candidates := map[Fingerprint]Relay{}

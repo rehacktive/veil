@@ -91,7 +91,7 @@ func run(parent context.Context, state string, port uint) error {
 	if err != nil {
 		return err
 	}
-	defer func() { listener.Close(); cancel(context.Canceled); <-listener.Done() }()
+	defer func() { _ = listener.Close(); cancel(context.Canceled); <-listener.Done() }()
 	fmt.Printf("Onion address: http://%s/ (publication continues in the background)\n", listener.Addr())
 	server := &http.Server{
 		ReadHeaderTimeout: 30 * time.Second,

@@ -1,5 +1,76 @@
 # Security scanning
 
+## Shared guard channels and live policy — 2026-09-21
+
+Native clients and service hosts now own separate `channel.Pool` instances.
+Each pool keys reuse by numeric address and both Tor identity pins. It refuses
+bootstrap channels and a different guard-policy owner. New leases reserve IDs
+before CREATE; each lease owns its receive queue, cancellation and teardown.
+Raw `channel.Dial` still exposes the dedicated transport API. Circuit encryption,
+stream IDs, SENDME credit and application isolation remain circuit-local.
+
+The pool caps physical channels at eight and total live/closing leases at 1,024.
+Receive queues hold at most 1,024 cells per lease, allowing the existing 1,000-cell
+circuit window plus controls. Overflow retires only that lease. Unknown IDs fail
+the shared transport. Cells for known retired IDs are discarded: a full window
+may already be in flight when a circuit closes, so a short consecutive-cell cap
+would let normal teardown disrupt siblings. Circuit IDs remain non-reusable and
+the channel allocation cap remains 65,536.
+
+Queued writes keep their order after a circuit request cancels. A lease-local
+send gate orders teardown after such writes. Pool lifetime, a 30-second physical
+handshake bound and a separate 30-second write bound prevent unbounded transport
+work. If DESTROY cannot be queued within 500 ms, the channel stops admitting
+new circuits and closes after existing leases drain. Actual TLS/protocol failure
+affects all attached circuits; request cancellation alone does not.
+
+`PaddingPolicy` publishes updates only after the guard store accepts a live,
+verified, rollback-protected snapshot. Subscribers coalesce updates without an
+unbounded notification queue. The sole TLS writer handles timer changes and
+START/STOP, retaining the fact that a channel has carried application traffic.
+Policy expiry stops cover writes; active circuits continue. Idle-retention
+changes affect only channels without live leases. Owner shutdown cancels and
+joins handshakes, readers, leases and retained channels.
+
+No new scanner suppressions were added: default gosec reports **66 production
+files, zero findings and 19 existing annotations**. These changes have not had
+independent review. Shared-transport congestion, scheduling and traffic shape
+still need adversarial and matched-workload analysis; this is not a claim of
+traffic equivalence to C Tor.
+
+## Client onion circuit padding — 2026-09-21
+
+`circuit/padding.go` implements the two client setup machines against a second
+hop advertising authenticated `Padding=2`. The sole reader validates hop, stream,
+version, machine/counter and response state before accepting padding controls.
+Incoming cover cells are limited to ten for introduction and one for rendezvous.
+Unsolicited/wrong-hop padding, duplicate acknowledgments and padding after STOP
+or rejection close the circuit. Old-counter replies are ignored within the
+existing 128-consecutive-ignored-cell bound. A legitimate negotiation error
+disables that machine without changing guards or retrying another path.
+
+The rendezvous client sends at most one cover cell; cryptographic delay sampling,
+an output-gate check and the guard-store-wide budget prevent a padding backlog.
+Signed disable/reduced/global limits refresh when the guard store accepts a live
+consensus, and expired policy cannot authorize new cover writes. Link padding
+now follows live policy as described above. The two accounting mechanisms are separate.
+
+`client/introduction.go` retains padded introductions for ten minutes, at most
+`MaxCircuits` including reservations. Full capacity waits subject to the setup
+deadline; it does not evict existing introductions to hide resource exhaustion.
+The dialer owns retained lifetimes independently of application streams and
+joins teardown on close. Failed circuits release reservations promptly.
+Tests exercise protocol rejection, output pressure/cancellation, retention expiry,
+capacity and teardown. Default gosec reports **64 production files, zero findings
+and 19 unchanged annotations**; full race tests and vet pass.
+
+This is not an independent audit or evidence of traffic indistinguishability.
+Service-side setup, application timing/volume, shared channel lifetime, TLS
+differences and cross-session traffic analysis remain review targets. Previous
+sections below record earlier milestones and their then-current limitations.
+
+## Running the scanner
+
 Run the installed gosec against all production Go packages:
 
 ```sh
@@ -229,7 +300,7 @@ INTRODUCE2 is authenticated before its plaintext is parsed or used for routing.
 Repeated client keys and cookies are rejected, including cookies replayed through
 another introduction point. Replay history is bounded without eviction while its
 keys remain accepted; saturation rotates the introduction generation. Processing
-is capped at 64 introductions/second per host generation. Rendezvous and stream
+is capped at 64 introductions/second across all host generations. Rendezvous and stream
 counts, I/O deadlines, publication passes and circuit lifetimes are bounded.
 
 Only the configured virtual port is accepted. The backend is a fixed numeric
@@ -243,5 +314,111 @@ Gosec reports **53 production files, zero findings and zero loading errors**.
 There are **19** narrowly scoped protocol annotations: the previous 18 plus the
 protocol-mandated zero CTR IV used to decrypt authenticated hs-ntor introductions.
 No new dependency was added. Full race tests, vet, parser fuzzing and private
-C Tor interoperability pass. Hosting remains experimental: vanguards, PoW,
-restricted discovery and seamless introduction replacement are not implemented.
+C Tor interoperability pass. Hosting remains experimental: full Vanguards, PoW,
+restricted discovery remain unimplemented; long-running public availability is
+not yet validated.
+
+Introduction rotation/recovery retains healthy advertised introduction circuits.
+Rendezvous workers belong to the host and keep their original lifetime deadlines;
+the same host-wide rendezvous and stream limits cover old and new generations.
+Old keys stop accepting requests at the latest certificate expiry of any
+attempted descriptor upload. An upload with a lost acknowledgment may still have
+reached an HSDir, so retention is recorded before sending, regardless of success.
+Certificate expiry, rather than three hours from upload, also covers clients
+fetching an older descriptor later. This follows Tor's [descriptor expiration
+rules](https://spec.torproject.org/rend-spec/deriving-keys.html#expiring-hidden-service-descriptors).
+
+The host holds at most four generations, including any replacement being built:
+12 introduction circuits, 4,096 client keys per introduction and 12,288 cookie
+entries per generation (49,152 across the host). Cookie replay detection and the
+processing rate budget span all live generations. Saturated replay state rejects
+requests and closes the affected reader without evicting live history. At the
+generation limit, replacement waits for expiry or loss of all points in a
+generation; unexpired advertised keys are not evicted to make room.
+
+Introduction readers stop and join before their cookie history is released;
+failed points close independently, preserving healthy siblings. Host cancellation or a
+fatal error cancels and joins all rendezvous/stream workers before `Run` returns.
+Relay failures, replay-cache saturation and unavailable HSDirs can still cause
+connection failures; overlap does not guarantee availability under those conditions.
+
+## Vanguards-Lite, guard-link padding and traffic measurements — 2026-09-21
+
+Vanguards-Lite now covers native onion client and hosting construction. Review
+`directory/vanguards.go` for pool membership, lifetime/count clamping and endpoint
+independence; `circuit/build.go`, `circuit/onion.go` and `circuit/service.go` for
+three/four-relay authentication and virtual service-hop addressing; and
+`relaycrypto/crypto.go` for single installation of that virtual hop. Clearnet
+family/subnet checks remain separate. The service's remotely supplied rendezvous
+must not cause entry-guard exclusions or unrestricted L2 replacement. The Lite
+pool intentionally does not persist across process restarts.
+
+`channel/padding.go` schedules idle padding in the sole transport writer, with
+cryptographic randomness and queued-data priority. `directory/padding.go` clamps
+signed consensus timing values. There is no padding queue or worker per timer;
+channel close unblocks the writer and joins it. Inbound relay padding negotiation
+is rejected on all link versions. Directory-only bootstrap channels opt out.
+
+A controlled local comparison in `scripts/traffic_fingerprint.py` records only
+TLS metadata from test-created loopback connections. The captured ClientHello
+structure differs from C Tor 0.4.9.12 (cipher suites, extensions, groups, signature
+algorithms and SNI presence). The raw public names, randoms, session IDs, keys and
+application payloads are omitted. This is evidence of remaining distinguishers,
+not a statistical anonymity evaluation. In particular, adding padding does not
+make Go's TLS handshake indistinguishable from Tor's TLS handshake.
+
+Checks passed with default gosec rules: **59 production files, zero findings,
+zero loading errors and 19 existing annotations**. Four-hop paths use a bounded
+array after validating path length; no additional suppressions were introduced.
+Race tests cover padding activation/reset/closure, sticky L2 membership, expiry,
+failed selection without fallback and multi-megabyte service-hop flow control.
+
+For independent review, the outstanding acceptance scope includes TLS handshake
+and record behavior, live consensus padding changes, shared-channel retention,
+circuit setup padding, adversarial endpoint/guard probing, sustained introduction
+rotation, cancellation/resource bounds and cross-session isolation. Reviewers
+should reproduce `make check`, `make security`, `make service-check` and the local
+TLS report command in README.md before conducting matched-workload captures.
+Full Vanguards and PoW remain outside this implementation. No independent audit
+has taken place as part of these changes.
+
+## TLS profile follow-up — 2026-09-21
+
+Two avoidable differences were corrected using the standard Go TLS engine:
+fresh Tor-shaped cover SNI per connection, and support for implemented hybrid
+ML-KEM groups instead of the prior classical-only allowlist. The SNI is generated
+independently of addresses, service names, isolation tokens and identity keys. TCP
+is connected to a numeric pinned relay before TLS is instantiated, so this name
+never triggers a DNS lookup. It is not an authentication credential: the exact
+TLS certificate must still validate through the RSA/Ed25519-pinned Tor chain.
+Resumption remains disabled. This change concerns the TLS link, not a claim of
+post-quantum onion or end-to-end security.
+
+The eight-sample before/after comparison remains distinguishable from C Tor.
+The TLS 1.3 key shares differ (Tor sends hybrid + P-256; Go sends hybrid + X25519),
+and cipher ordering, extension order/content, signature schemes and supported
+group ordering also differ. In particular, Go lacks Tor's P-224 group. Enabling
+obsolete or unimplemented mechanisms purely to reproduce bytes would not be a
+sound compatibility fix. A shorter size gap is not an anonymity measurement.
+
+Options evaluated:
+
+- Keep `crypto/tls`: preserves the maintained standard TLS engine and lets us
+  correct SNI and group configuration now. Its public API does not expose full
+  ClientHello extension or TLS 1.3 cipher-suite ordering. See the
+  [Go TLS Config documentation](https://pkg.go.dev/crypto/tls#Config).
+- A custom engine such as [uTLS](https://github.com/refraction-networking/utls)
+  exposes ClientHello customization, but is a fork of the TLS implementation.
+  Adopting it requires validating the chosen Tor profile, real support for every
+  advertised algorithm, authentication/failure behavior and security-update
+  maintenance. No such dependency was added and no equivalence was asserted.
+- Using the C Tor/OpenSSL engine changes the project's native-Go architecture
+  and runtime dependencies. It is outside this bounded configuration correction.
+
+Default gosec rules pass on **61 production files**, with zero findings and the
+same **19 annotations**. The complete race suite and vet pass. Channel tests also
+pass with Go **1.24.13**. Real TCP tests exercise TLS 1.2/P-256, TLS 1.3/X25519,
+TLS 1.3/P-256 via HelloRetryRequest, and TLS 1.3/X25519MLKEM768. Existing invalid
+pin, certificate-binding, expiry, cancellation and resource-limit tests remain
+in force. The private onion interoperability suite passes with the new TLS,
+including bulk transfers, padding and introduction rotation.

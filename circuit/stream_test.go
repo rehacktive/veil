@@ -33,8 +33,12 @@ type streamPeer struct {
 }
 
 func streamCircuit(t *testing.T, configure func(*streamPeer)) (*Circuit, *testNetwork, *streamPeer) {
+	return streamCircuitHops(t, configure, 3)
+}
+
+func streamCircuitHops(t *testing.T, configure func(*streamPeer), count int) (*Circuit, *testNetwork, *streamPeer) {
 	t.Helper()
-	n := network(t)
+	n := network(t, count)
 	peer := &streamPeer{perStream: make(map[uint16]int)}
 	if configure != nil {
 		configure(peer)
@@ -96,7 +100,7 @@ func streamCircuit(t *testing.T, configure func(*streamPeer)) (*Circuit, *testNe
 		}
 		return nil
 	}
-	c, err := build(context.Background(), n.hops, &testAttempt{usable: directory.GuardUsable}, time.Second, n.dial, func() bool { return true })
+	c, err := buildHops(context.Background(), n.hops, &testAttempt{usable: directory.GuardUsable}, time.Second, n.dial, func() bool { return true }, false)
 	if err != nil {
 		t.Fatal(err)
 	}

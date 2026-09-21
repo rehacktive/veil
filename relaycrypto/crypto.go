@@ -100,6 +100,7 @@ type Client struct {
 	mu                sync.Mutex
 	forward, backward []*layer
 	closed            bool
+	onionHop          bool
 }
 
 func NewClient(keys ...ntor.KeyMaterial) (*Client, error) {
@@ -123,7 +124,7 @@ func (c *Client) appendHop(k ntor.KeyMaterial) {
 func (c *Client) AddHop(k ntor.KeyMaterial) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if c.closed || len(c.forward) == 0 {
+	if c.closed || c.onionHop || len(c.forward) == 0 {
 		return ErrClosed
 	}
 	c.appendHop(k)
@@ -131,12 +132,12 @@ func (c *Client) AddHop(k ntor.KeyMaterial) error {
 }
 
 // AddOnionHop adds the virtual service hop only after hs-ntor authenticates it.
-// Its AES-256/SHA3-256 state is independent of the three relay hops. Tor1 SENDME
+// Its AES-256/SHA3-256 state is independent of the physical relay hops. Tor1 SENDME
 // tags retain the first 20 bytes of the running digest, including for HSv3.
 func (c *Client) AddOnionHop(k [128]byte) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if c.closed || len(c.forward) != 3 {
+	if c.closed || c.onionHop || (len(c.forward) != 3 && len(c.forward) != 4) {
 		return ErrClosed
 	}
 	makeLayer := func(key, seed []byte) (*layer, error) {
@@ -160,6 +161,7 @@ func (c *Client) AddOnionHop(k [128]byte) error {
 	}
 	c.forward = append(c.forward, f)
 	c.backward = append(c.backward, b)
+	c.onionHop = true
 	return nil
 }
 

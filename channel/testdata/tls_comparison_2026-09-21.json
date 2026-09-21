@@ -1,0 +1,838 @@
+{
+  "schema": 1,
+  "kind": "summary of two independent local TLS measurement batches",
+  "recorded_date": "2026-09-21",
+  "go_toolchain": "go1.27.1 darwin/arm64",
+  "tor_build_info": [
+    "Tor version 0.4.9.12.",
+    "Tor is running on Darwin with Libevent 2.1.13-stable, OpenSSL 3.6.4, Zlib 1.2.12, Liblzma 5.8.4, Libzstd 1.5.7 and Unknown N/A as libc.",
+    "Tor compiled with clang version 17.0.0"
+  ],
+  "before": {
+    "veil": {
+      "stable_fields": {
+        "cipher_suites": [
+          49195,
+          49199,
+          49196,
+          49200,
+          52393,
+          52392,
+          49161,
+          49171,
+          49162,
+          49172,
+          4865,
+          4866,
+          4867
+        ],
+        "compression_methods": [
+          0
+        ],
+        "extensions": [
+          11,
+          65281,
+          23,
+          18,
+          5,
+          10,
+          13,
+          50,
+          43,
+          51
+        ],
+        "key_shares": [
+          {
+            "group": 29,
+            "length": 32
+          }
+        ],
+        "legacy_version": 771,
+        "server_name_present": false,
+        "session_id_length": 32,
+        "signature_algorithms": [
+          2308,
+          2309,
+          2310,
+          2052,
+          1027,
+          2055,
+          2053,
+          2054,
+          1025,
+          1281,
+          1537,
+          1283,
+          1539,
+          513,
+          515
+        ],
+        "supported_groups": [
+          29,
+          23
+        ],
+        "supported_versions": [
+          772,
+          771
+        ]
+      },
+      "variable_fields": {},
+      "first_record_lengths": [
+        {
+          "bytes": 264,
+          "count": 8
+        }
+      ]
+    },
+    "c_tor": {
+      "stable_fields": {
+        "cipher_suites": [
+          4865,
+          4867,
+          4866,
+          49195,
+          49199,
+          52393,
+          52392,
+          49196,
+          49200,
+          49162,
+          49161,
+          49171,
+          49172,
+          156,
+          157,
+          47,
+          53
+        ],
+        "compression_methods": [
+          0
+        ],
+        "extensions": [
+          65281,
+          0,
+          11,
+          10,
+          35,
+          22,
+          23,
+          13,
+          43,
+          45,
+          51
+        ],
+        "key_shares": [
+          {
+            "group": 4588,
+            "length": 1216
+          },
+          {
+            "group": 23,
+            "length": 65
+          }
+        ],
+        "legacy_version": 771,
+        "server_name_present": true,
+        "server_name_tor_shape": true,
+        "session_id_length": 32,
+        "signature_algorithms": [
+          2309,
+          2310,
+          2308,
+          1027,
+          1283,
+          1539,
+          2055,
+          2056,
+          2074,
+          2075,
+          2076,
+          2057,
+          2058,
+          2059,
+          2052,
+          2053,
+          2054,
+          1025,
+          1281,
+          1537,
+          771,
+          769,
+          770,
+          1026,
+          1282,
+          1538
+        ],
+        "supported_groups": [
+          4588,
+          4587,
+          23,
+          29,
+          21
+        ],
+        "supported_versions": [
+          772,
+          771
+        ]
+      },
+      "variable_fields": {
+        "server_name_length": [
+          {
+            "value": 12,
+            "count": 1
+          },
+          {
+            "value": 18,
+            "count": 1
+          },
+          {
+            "value": 19,
+            "count": 2
+          },
+          {
+            "value": 26,
+            "count": 1
+          },
+          {
+            "value": 29,
+            "count": 1
+          },
+          {
+            "value": 31,
+            "count": 1
+          },
+          {
+            "value": 32,
+            "count": 1
+          }
+        ]
+      },
+      "first_record_lengths": [
+        {
+          "bytes": 1539,
+          "count": 1
+        },
+        {
+          "bytes": 1545,
+          "count": 1
+        },
+        {
+          "bytes": 1546,
+          "count": 2
+        },
+        {
+          "bytes": 1553,
+          "count": 1
+        },
+        {
+          "bytes": 1556,
+          "count": 1
+        },
+        {
+          "bytes": 1558,
+          "count": 1
+        },
+        {
+          "bytes": 1559,
+          "count": 1
+        }
+      ]
+    },
+    "stable_differences": {
+      "cipher_suites": {
+        "veil": [
+          49195,
+          49199,
+          49196,
+          49200,
+          52393,
+          52392,
+          49161,
+          49171,
+          49162,
+          49172,
+          4865,
+          4866,
+          4867
+        ],
+        "c_tor": [
+          4865,
+          4867,
+          4866,
+          49195,
+          49199,
+          52393,
+          52392,
+          49196,
+          49200,
+          49162,
+          49161,
+          49171,
+          49172,
+          156,
+          157,
+          47,
+          53
+        ]
+      },
+      "extensions": {
+        "veil": [
+          11,
+          65281,
+          23,
+          18,
+          5,
+          10,
+          13,
+          50,
+          43,
+          51
+        ],
+        "c_tor": [
+          65281,
+          0,
+          11,
+          10,
+          35,
+          22,
+          23,
+          13,
+          43,
+          45,
+          51
+        ]
+      },
+      "key_shares": {
+        "veil": [
+          {
+            "group": 29,
+            "length": 32
+          }
+        ],
+        "c_tor": [
+          {
+            "group": 4588,
+            "length": 1216
+          },
+          {
+            "group": 23,
+            "length": 65
+          }
+        ]
+      },
+      "server_name_present": {
+        "veil": false,
+        "c_tor": true
+      },
+      "signature_algorithms": {
+        "veil": [
+          2308,
+          2309,
+          2310,
+          2052,
+          1027,
+          2055,
+          2053,
+          2054,
+          1025,
+          1281,
+          1537,
+          1283,
+          1539,
+          513,
+          515
+        ],
+        "c_tor": [
+          2309,
+          2310,
+          2308,
+          1027,
+          1283,
+          1539,
+          2055,
+          2056,
+          2074,
+          2075,
+          2076,
+          2057,
+          2058,
+          2059,
+          2052,
+          2053,
+          2054,
+          1025,
+          1281,
+          1537,
+          771,
+          769,
+          770,
+          1026,
+          1282,
+          1538
+        ]
+      },
+      "supported_groups": {
+        "veil": [
+          29,
+          23
+        ],
+        "c_tor": [
+          4588,
+          4587,
+          23,
+          29,
+          21
+        ]
+      }
+    },
+    "sample_count": 8
+  },
+  "after": {
+    "veil": {
+      "stable_fields": {
+        "cipher_suites": [
+          49195,
+          49199,
+          49196,
+          49200,
+          52393,
+          52392,
+          49161,
+          49171,
+          49162,
+          49172,
+          4865,
+          4866,
+          4867
+        ],
+        "compression_methods": [
+          0
+        ],
+        "extensions": [
+          0,
+          11,
+          65281,
+          23,
+          18,
+          5,
+          10,
+          13,
+          50,
+          43,
+          51
+        ],
+        "key_shares": [
+          {
+            "group": 4588,
+            "length": 1216
+          },
+          {
+            "group": 29,
+            "length": 32
+          }
+        ],
+        "legacy_version": 771,
+        "server_name_present": true,
+        "server_name_tor_shape": true,
+        "session_id_length": 32,
+        "signature_algorithms": [
+          2308,
+          2309,
+          2310,
+          2052,
+          1027,
+          2055,
+          2053,
+          2054,
+          1025,
+          1281,
+          1537,
+          1283,
+          1539,
+          513,
+          515
+        ],
+        "supported_groups": [
+          4588,
+          4587,
+          29,
+          23
+        ],
+        "supported_versions": [
+          772,
+          771
+        ]
+      },
+      "variable_fields": {
+        "server_name_length": [
+          {
+            "value": 13,
+            "count": 2
+          },
+          {
+            "value": 14,
+            "count": 1
+          },
+          {
+            "value": 19,
+            "count": 1
+          },
+          {
+            "value": 21,
+            "count": 2
+          },
+          {
+            "value": 27,
+            "count": 1
+          },
+          {
+            "value": 29,
+            "count": 1
+          }
+        ]
+      },
+      "first_record_lengths": [
+        {
+          "bytes": 1510,
+          "count": 2
+        },
+        {
+          "bytes": 1511,
+          "count": 1
+        },
+        {
+          "bytes": 1516,
+          "count": 1
+        },
+        {
+          "bytes": 1518,
+          "count": 2
+        },
+        {
+          "bytes": 1524,
+          "count": 1
+        },
+        {
+          "bytes": 1526,
+          "count": 1
+        }
+      ]
+    },
+    "c_tor": {
+      "stable_fields": {
+        "cipher_suites": [
+          4865,
+          4867,
+          4866,
+          49195,
+          49199,
+          52393,
+          52392,
+          49196,
+          49200,
+          49162,
+          49161,
+          49171,
+          49172,
+          156,
+          157,
+          47,
+          53
+        ],
+        "compression_methods": [
+          0
+        ],
+        "extensions": [
+          65281,
+          0,
+          11,
+          10,
+          35,
+          22,
+          23,
+          13,
+          43,
+          45,
+          51
+        ],
+        "key_shares": [
+          {
+            "group": 4588,
+            "length": 1216
+          },
+          {
+            "group": 23,
+            "length": 65
+          }
+        ],
+        "legacy_version": 771,
+        "server_name_present": true,
+        "server_name_tor_shape": true,
+        "session_id_length": 32,
+        "signature_algorithms": [
+          2309,
+          2310,
+          2308,
+          1027,
+          1283,
+          1539,
+          2055,
+          2056,
+          2074,
+          2075,
+          2076,
+          2057,
+          2058,
+          2059,
+          2052,
+          2053,
+          2054,
+          1025,
+          1281,
+          1537,
+          771,
+          769,
+          770,
+          1026,
+          1282,
+          1538
+        ],
+        "supported_groups": [
+          4588,
+          4587,
+          23,
+          29,
+          21
+        ],
+        "supported_versions": [
+          772,
+          771
+        ]
+      },
+      "variable_fields": {
+        "server_name_length": [
+          {
+            "value": 14,
+            "count": 1
+          },
+          {
+            "value": 18,
+            "count": 1
+          },
+          {
+            "value": 19,
+            "count": 1
+          },
+          {
+            "value": 21,
+            "count": 2
+          },
+          {
+            "value": 30,
+            "count": 1
+          },
+          {
+            "value": 32,
+            "count": 1
+          },
+          {
+            "value": 33,
+            "count": 1
+          }
+        ]
+      },
+      "first_record_lengths": [
+        {
+          "bytes": 1541,
+          "count": 1
+        },
+        {
+          "bytes": 1545,
+          "count": 1
+        },
+        {
+          "bytes": 1546,
+          "count": 1
+        },
+        {
+          "bytes": 1548,
+          "count": 2
+        },
+        {
+          "bytes": 1557,
+          "count": 1
+        },
+        {
+          "bytes": 1559,
+          "count": 1
+        },
+        {
+          "bytes": 1560,
+          "count": 1
+        }
+      ]
+    },
+    "stable_differences": {
+      "cipher_suites": {
+        "veil": [
+          49195,
+          49199,
+          49196,
+          49200,
+          52393,
+          52392,
+          49161,
+          49171,
+          49162,
+          49172,
+          4865,
+          4866,
+          4867
+        ],
+        "c_tor": [
+          4865,
+          4867,
+          4866,
+          49195,
+          49199,
+          52393,
+          52392,
+          49196,
+          49200,
+          49162,
+          49161,
+          49171,
+          49172,
+          156,
+          157,
+          47,
+          53
+        ]
+      },
+      "extensions": {
+        "veil": [
+          0,
+          11,
+          65281,
+          23,
+          18,
+          5,
+          10,
+          13,
+          50,
+          43,
+          51
+        ],
+        "c_tor": [
+          65281,
+          0,
+          11,
+          10,
+          35,
+          22,
+          23,
+          13,
+          43,
+          45,
+          51
+        ]
+      },
+      "key_shares": {
+        "veil": [
+          {
+            "group": 4588,
+            "length": 1216
+          },
+          {
+            "group": 29,
+            "length": 32
+          }
+        ],
+        "c_tor": [
+          {
+            "group": 4588,
+            "length": 1216
+          },
+          {
+            "group": 23,
+            "length": 65
+          }
+        ]
+      },
+      "signature_algorithms": {
+        "veil": [
+          2308,
+          2309,
+          2310,
+          2052,
+          1027,
+          2055,
+          2053,
+          2054,
+          1025,
+          1281,
+          1537,
+          1283,
+          1539,
+          513,
+          515
+        ],
+        "c_tor": [
+          2309,
+          2310,
+          2308,
+          1027,
+          1283,
+          1539,
+          2055,
+          2056,
+          2074,
+          2075,
+          2076,
+          2057,
+          2058,
+          2059,
+          2052,
+          2053,
+          2054,
+          1025,
+          1281,
+          1537,
+          771,
+          769,
+          770,
+          1026,
+          1282,
+          1538
+        ]
+      },
+      "supported_groups": {
+        "veil": [
+          4588,
+          4587,
+          29,
+          23
+        ],
+        "c_tor": [
+          4588,
+          4587,
+          23,
+          29,
+          21
+        ]
+      }
+    },
+    "sample_count": 8
+  },
+  "changes": [
+    "Fresh per-connection www.<4..25 random base32 characters>.com SNI.",
+    "Enable implemented hybrid groups alongside classical fallbacks in crypto/tls."
+  ],
+  "limitations": [
+    "Stable means unchanged in these samples, not a population-wide conclusion.",
+    "No statistical indistinguishability verdict is produced from this sample count.",
+    "Different post-handshake lifetimes/workloads: record totals and timings are not parity metrics.",
+    "No browser, application traffic, public network, packet segmentation or anonymity evaluation.",
+    "ClientHello structural equality would not establish indistinguishability."
+  ]
+}

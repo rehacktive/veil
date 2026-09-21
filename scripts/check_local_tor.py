@@ -28,6 +28,8 @@ def main():
     parser.add_argument("--tor", required=True, type=pathlib.Path)
     parser.add_argument("--veil", default=pathlib.Path("bin/veil"), type=pathlib.Path)
     parser.add_argument("--directory-probe", type=pathlib.Path, help="optional compiled scripts/directory_probe.go helper")
+    parser.add_argument("--traffic-report", type=pathlib.Path, help="write a controlled TLS fingerprint comparison with C Tor")
+    parser.add_argument("--traffic-samples", type=int, default=5, choices=range(1, 21), metavar="1..20", help="independent TLS connections per client (default 5)")
     args = parser.parse_args()
     tor, veil = args.tor.resolve(strict=True), args.veil.resolve(strict=True)
     version = subprocess.check_output([str(tor), "--version"], text=True).splitlines()[0]
@@ -132,6 +134,9 @@ def main():
                         # Tor's periodic descriptor generation follows listener setup.
                         time.sleep(0.2)
                     result_info["directory"] = json.loads(probe.stdout)
+                if args.traffic_report:
+                    from traffic_fingerprint import compare
+                    result_info["traffic_fingerprint"] = compare(tor, veil, root, port, rsa_pin, ed_pin, args.traffic_report.resolve(), args.traffic_samples)
                 print(json.dumps(result_info, indent=2))
             finally:
                 if proc.poll() is None:

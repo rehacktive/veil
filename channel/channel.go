@@ -10,6 +10,7 @@ import (
 	"io"
 	"net"
 	"sync"
+	"time"
 
 	"veil/cell"
 )
@@ -23,6 +24,9 @@ type writeRequest struct {
 	data   []byte
 	result chan error
 }
+
+// MaxBatchCells bounds one atomic fixed-cell write and its queue memory cost.
+const MaxBatchCells = 16
 
 // Channel is an authenticated, bounded cell transport. It is safe for concurrent
 // use, but callers must serialize cells that require circuit-specific ordering.
@@ -41,12 +45,26 @@ type Channel struct {
 	mu      sync.Mutex
 	err     error
 	usedIDs map[uint32]struct{}
+	padding *PaddingOptions
+	policy  *PaddingPolicy
+	used    chan struct{}
 }
 
 func newChannel(ctx context.Context, raw net.Conn, conn io.ReadWriter, codec *cell.Codec, info Info, queue int) *Channel {
+	return newPaddedChannel(ctx, raw, conn, codec, info, queue, nil)
+}
+
+func newPaddedChannel(ctx context.Context, raw net.Conn, conn io.ReadWriter, codec *cell.Codec, info Info, queue int, padding *PaddingOptions, policies ...*PaddingPolicy) *Channel {
 	c := &Channel{raw: raw, conn: conn, codec: codec, info: info,
 		send: make(chan writeRequest, queue), receive: make(chan cell.Cell, queue),
-		done: make(chan struct{}), usedIDs: make(map[uint32]struct{})}
+		done: make(chan struct{}), usedIDs: make(map[uint32]struct{}), used: make(chan struct{}, 1)}
+	if padding != nil {
+		p := *padding
+		c.padding = &p
+	}
+	if len(policies) > 0 {
+		c.policy = policies[0]
+	}
 	c.wg.Add(3)
 	go c.readLoop()
 	go c.writeLoop()
@@ -111,49 +129,90 @@ func (c *Channel) allocateCircuitID(random io.Reader) (uint32, error) {
 // callers must not retry on the same channel. Successful writing is not a relay
 // acknowledgement. TLS/circuit state must be handled by the higher layers.
 func (c *Channel) Send(ctx context.Context, frame cell.Cell) error {
+	_, err := c.sendCell(ctx, frame, true)
+	return err
+}
+
+// SendBatch writes 1..MaxBatchCells fixed cells in order in one transport write.
+// All cells are validated and copied before queueing. Cancellation and failure
+// have the same semantics as Send; success means the whole batch was written.
+// It does not wait for more cells or guarantee a particular TLS record boundary.
+func (c *Channel) SendBatch(ctx context.Context, frames []cell.Cell) error {
+	_, err := c.sendCells(ctx, frames, true, true)
+	return err
+}
+
+// A shared-channel caller retires its circuit after cancellation. Already
+// queued writes still complete in order, without canceling sibling circuits.
+func (c *Channel) sendCell(ctx context.Context, frame cell.Cell, cancelChannel bool) (bool, error) {
+	return c.sendCells(ctx, []cell.Cell{frame}, cancelChannel, false)
+}
+
+func (c *Channel) sendCells(ctx context.Context, frames []cell.Cell, cancelChannel, batch bool) (bool, error) {
 	if err := ctx.Err(); err != nil {
-		return err
+		return false, err
 	}
-	c.mu.Lock()
-	err := c.err
-	_, allocated := c.usedIDs[frame.CircuitID]
-	c.mu.Unlock()
-	if err != nil {
-		return err
-	}
-	switch frame.Command {
-	case cell.Create2, cell.CreateFast, cell.Relay, cell.RelayEarly, cell.Destroy:
-		if !allocated {
-			return fmt.Errorf("%w: circuit ID was not allocated on this channel", ErrProtocol)
-		}
-	case cell.Padding, cell.VPadding:
-	default:
-		return fmt.Errorf("%w: client cannot send %s on an open channel", ErrProtocol, frame.Command)
-	}
-	if (frame.Command == cell.Relay || frame.Command == cell.RelayEarly) && len(frame.Payload) != cell.PayloadSize {
-		return fmt.Errorf("%w: encrypted relay body must be exactly 509 bytes", ErrProtocol)
+	if len(frames) == 0 || len(frames) > MaxBatchCells {
+		return false, fmt.Errorf("%w: invalid cell batch size", ErrProtocol)
 	}
 	var wire bytes.Buffer
-	if err := c.codec.Write(&wire, frame); err != nil {
-		return err
+	for _, frame := range frames {
+		if batch && frame.Command.Variable() {
+			return false, fmt.Errorf("%w: batch requires fixed cells", ErrProtocol)
+		}
+		c.mu.Lock()
+		err := c.err
+		_, allocated := c.usedIDs[frame.CircuitID]
+		c.mu.Unlock()
+		if err != nil {
+			return false, err
+		}
+		switch frame.Command {
+		case cell.Create2, cell.CreateFast, cell.Relay, cell.RelayEarly, cell.Destroy:
+			if !allocated {
+				return false, fmt.Errorf("%w: circuit ID was not allocated on this channel", ErrProtocol)
+			}
+		case cell.Padding, cell.VPadding:
+		default:
+			return false, fmt.Errorf("%w: client cannot send %s on an open channel", ErrProtocol, frame.Command)
+		}
+		if (frame.Command == cell.Relay || frame.Command == cell.RelayEarly) && len(frame.Payload) != cell.PayloadSize {
+			return false, fmt.Errorf("%w: encrypted relay body must be exactly 509 bytes", ErrProtocol)
+		}
+		if err := c.codec.Write(&wire, frame); err != nil {
+			return false, err
+		}
 	}
 	req := writeRequest{data: wire.Bytes(), result: make(chan error, 1)}
 	select {
 	case <-ctx.Done():
-		return ctx.Err()
+		return false, ctx.Err()
 	case <-c.done:
-		return c.Err()
+		return false, c.Err()
 	case c.send <- req:
 	}
 	select {
 	case err := <-req.result:
-		return err
+		return true, err
 	case <-ctx.Done():
-		c.shutdown(ctx.Err())
-		return ctx.Err()
+		if cancelChannel {
+			c.shutdown(ctx.Err())
+		}
+		return true, ctx.Err()
 	case <-c.done:
-		return c.Err()
+		return true, c.Err()
 	}
+}
+
+func (c *Channel) write(data []byte) error {
+	// Transport stalls have a separate bound from each circuit's deadline.
+	if err := c.raw.SetWriteDeadline(time.Now().Add(30 * time.Second)); err != nil {
+		return err
+	}
+	if err := writeFull(c.conn, data); err != nil {
+		return err
+	}
+	return c.raw.SetWriteDeadline(time.Time{})
 }
 
 // Receive returns the next non-padding cell. A canceled receive leaves the
@@ -208,10 +267,8 @@ func (c *Channel) readLoop() {
 				return
 			}
 		case cell.PaddingNegotiate:
-			if c.info.LinkVersion < 5 {
-				c.shutdown(fmt.Errorf("%w: padding negotiation requires link 5", ErrProtocol))
-				return
-			}
+			c.shutdown(fmt.Errorf("%w: relay cannot negotiate client padding", ErrProtocol))
+			return
 		default:
 			c.shutdown(fmt.Errorf("%w: unexpected %s after handshake", ErrProtocol, frame.Command))
 			return
@@ -220,23 +277,6 @@ func (c *Channel) readLoop() {
 		case c.receive <- frame:
 		case <-c.done:
 			return
-		}
-	}
-}
-
-func (c *Channel) writeLoop() {
-	defer c.wg.Done()
-	for {
-		select {
-		case <-c.done:
-			return
-		case req := <-c.send:
-			err := writeFull(c.conn, req.data)
-			req.result <- err
-			if err != nil {
-				c.shutdown(err)
-				return
-			}
 		}
 	}
 }

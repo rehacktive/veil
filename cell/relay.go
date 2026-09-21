@@ -36,6 +36,8 @@ const (
 	RelayRendezvous2           RelayCommand = 37
 	RelayRendezvousEstablished RelayCommand = 39
 	RelayIntroduceAck          RelayCommand = 40
+	RelayPaddingNegotiate      RelayCommand = 41
+	RelayPaddingNegotiated     RelayCommand = 42
 )
 
 // RelayBody is one fixed-size body in Tor's original relay format (v0).
