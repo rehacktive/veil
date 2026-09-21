@@ -1,3 +1,99 @@
+# Veil 0.13 native onion hosting validation
+
+Run on 2026-09-21, macOS arm64, Go 1.27.1, independent peer C Tor 0.4.9.12.
+
+- `go test -race ./... -timeout=120s`: all packages passed.
+- `go vet ./...`: passed.
+- Gosec: **53 production files, zero findings, zero loading errors**, with
+  **19** reviewed protocol annotations. Production binary rebuilt as **0.13.0-dev**.
+- Descriptor tests verify blinded signing, certificates, encryption round trips,
+  wrong subcredentials and tampering. Service hs-ntor agrees with client keys;
+  mutated/truncated introductions fail authentication.
+- State tests verify stable addresses and increasing revisions across reopen,
+  private permissions, symlink rejection and refusal to silently replace a lost
+  identity when its hostname still exists.
+- Stream fixtures cover immediate incoming BEGIN, reversed service-hop crypto,
+  multi-megabyte SENDME flow control, duplicate stream IDs, wrong hops and ports.
+- Five-second introduction-parser fuzzing passed **21,488 executions**, including
+  authenticated adversarial plaintext as well as malformed raw cells.
+- Host tests cover fixed loopback backends, concurrency bounds, cross-introduction
+  replay rejection, replay-cache saturation and introduction rate limiting.
+
+## Independent private-network interoperability
+
+The private harness runs one authority, four relays, a C Tor SOCKS client and a
+local HTTP fixture. Its authority supplies measured fixture bandwidths, HSDir
+flags and 75-second votes with `hsdir_interval=30`, matching C Tor's shortened
+private-network onion periods. The C Tor client starts after directory readiness.
+The service test binary uses explicit localhost hops; production subnet checks
+are not disabled. Temporary peer keys, processes and configuration are cleaned up.
+
+The final test body passed in **1.60 seconds** after private directory bootstrap:
+
+- Three native ESTABLISH_INTRO registrations accepted by C Tor relays.
+- Signed/encrypted descriptors accepted by all five available HSDirs for each
+  of two overlapping periods.
+- C Tor independently discovered/decrypted the descriptor, authenticated the
+  service rendezvous and fetched HTTP through Veil's loopback forwarding.
+- Five **2,340,000-byte** downloads passed integrity checks, four concurrently.
+- A request to unmapped onion port **81** failed.
+- Hosting, circuits, streams and directory workers shut down under the race detector.
+
+Earlier harness runs exposed idle relay bandwidth/path constraints and C Tor's
+special testing-network period rules. These were corrected in the private fixture;
+production trust, path selection and protocol authentication were not weakened.
+
+Reproduce with `make service-check`, or specify installed peer binaries with
+`scripts/service_check.py --tor /path/to/tor --tor-gencert /path/to/tor-gencert`.
+
+## Public-network hosting interoperability
+
+Also run on 2026-09-21 with the production binary and an independent C Tor
+0.4.9.12 client on the real Tor network. The backend served only a temporary
+fixture on a numeric loopback address. Service identity, directory state and
+persistent guard state were retained across diagnostic restarts.
+
+- C Tor discovered and decrypted the public descriptor, completed service
+  rendezvous, and fetched the expected **48-byte HTTP 200** response in
+  **2.858 seconds** on the successful probe.
+- Three concurrent **2,400,000-byte** downloads matched the expected content
+  byte for byte, in **9.919, 10.269 and 14.805 seconds**.
+- Unmapped onion port **81** returned SOCKS reply **2** (curl exit 97), with no
+  response body, in **11.512 seconds**.
+- Both public descriptor periods had successful uploads: the final run reached
+  **8/8** HSDirs for one period and **7/8** for the other. Remaining uploads timed
+  out and were retried. Full-publication `service_ready` was not reached during
+  this run; successful client access was checked independently while publication
+  remained partial. One initial client probe timed out before a retry succeeded.
+- All temporary host, client and backend processes were stopped. Veil and C Tor
+  exited successfully on SIGINT. This was a short interoperability test, not a
+  long-duration rotation, availability or anonymity assessment.
+
+The real-network run exposed and fixed three issues:
+
+1. A successful but slow fresh directory download exceeded the three-minute
+   attempt deadline. Public attempts now allow eight minutes within the existing
+   overall startup deadline.
+2. Fixed HSDir endpoints were incorrectly subjected to random middle bandwidth
+   weighting. The real consensus assigned some of them zero middle weight.
+   Mandatory verified endpoints now bypass only that random sampling step;
+   randomly chosen endpoints and middle hops retain bandwidth weighting.
+3. Fixed endpoint family/subnet exclusions were applied too late, after choosing
+   a guard. They now restrict selection from the persistent guard sample before
+   circuit construction. Path separation and authenticated relay checks remain.
+
+Regression tests cover zero-weight fixed endpoints, unavailable relays, and
+family/subnet exclusions. Full race tests and vet pass; gosec still reports
+**zero findings and zero loading errors**, with the same 19 protocol annotations.
+Debug mode now reports reasons for rejected rendezvous relay/link data.
+
+Local evidence is retained under `/private/tmp/veil-public-host-b8g77wli`:
+`service.log`, `probe-response.txt` and `transfer-results.json`. The `service`
+and `tor` subdirectories contain private test state and must not be published.
+The public browsing/onion-client results below remain separate.
+
+---
+
 # Opt-in debug logging validation
 
 Run on 2026-09-20, macOS arm64, Go 1.27.1.

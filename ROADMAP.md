@@ -106,6 +106,20 @@ This pool is intentionally conservative and requires explicit tokens. It neither
 infers browser sessions nor provides Tor Browser's privacy model. Live outcomes
 and remaining limits are recorded in VALIDATION.md and README.md.
 
+## 8. V3 onion hosting — private and public interoperability verified
+
+- [x] Persist a private service identity, stable address and durable revision counter.
+- [x] Generate blinded signing keys and authenticated, encrypted descriptors.
+- [x] Establish introduction points, publish to overlapping HSDir rings and renew descriptors.
+- [x] Authenticate service-side hs-ntor requests, reject replays and join rendezvous circuits.
+- [x] Accept bounded incoming streams and forward one virtual port to a fixed loopback backend.
+- [x] Expose `veil service`, with quiet defaults, optional debug output and joined shutdown.
+- [x] Verify private C Tor client interoperability: HTTP, concurrent multi-megabyte downloads, unmapped-port rejection and clean shutdown.
+- [x] Verify public C Tor client interoperability: HTTP, three concurrent 2.4 MB downloads and unmapped-port rejection. Fix fresh-bootstrap and mandatory-endpoint path selection failures.
+- [ ] Improve partial-publication readiness reporting and verify long-running public hosting/rotation.
+- [ ] Add seamless introduction replacement that preserves active rendezvous streams.
+- [ ] Add restricted discovery, PoW defenses, vanguards and broader hosting parity.
+
 ## Later parity work
 
-ntor-v3 and newer relay cryptography, additional onion client features and service hosting, bridges and pluggable transports, advanced congestion control, RPC, and relay/directory-authority operation are separate milestones. The initial client stages do not claim feature parity with the full Arti workspace.
+ntor-v3 and newer relay cryptography, additional onion client and hosting features, bridges and pluggable transports, advanced congestion control, RPC, and relay/directory-authority operation are separate milestones. The initial client stages do not claim feature parity with the full Arti workspace.

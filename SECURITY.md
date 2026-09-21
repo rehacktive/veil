@@ -214,3 +214,34 @@ Full race tests and vet pass. Gosec reports **47 production files, zero findings
 and zero loading errors**, with the existing **18** protocol annotations unchanged.
 No dependency or suppression was added. Quiet-mode, credential exclusion,
 concurrent escaping and live public HTTPS checks are recorded in VALIDATION.md.
+
+## Onion hosting follow-up (0.13)
+
+The native host uses a persistent Ed25519 identity and durably reserves revision
+counters before publishing. Private state uses the existing audited atomic
+write/private read routines under exclusive directory ownership. A missing key
+alongside an existing hostname fails rather than silently changing the address.
+Blinded signing, descriptor certificates and both encryption layers follow the
+Tor specification. A C Tor peer accepted the descriptor and completed hs-ntor.
+This is interoperability evidence, not an independent cryptographic review.
+
+INTRODUCE2 is authenticated before its plaintext is parsed or used for routing.
+Repeated client keys and cookies are rejected, including cookies replayed through
+another introduction point. Replay history is bounded without eviction while its
+keys remain accepted; saturation rotates the introduction generation. Processing
+is capped at 64 introductions/second per host generation. Rendezvous and stream
+counts, I/O deadlines, publication passes and circuit lifetimes are bounded.
+
+Only the configured virtual port is accepted. The backend is a fixed numeric
+loopback endpoint; incoming addresses cannot select a different destination.
+Rendezvous relays must match the live verified directory, including the supported
+link list and ntor key. All public-network circuits use normal guarded selection.
+The localhost-hop helper requires the `veiltest` build tag and is absent from
+production builds. No flag enables it in the production CLI.
+
+Gosec reports **53 production files, zero findings and zero loading errors**.
+There are **19** narrowly scoped protocol annotations: the previous 18 plus the
+protocol-mandated zero CTR IV used to decrypt authenticated hs-ntor introductions.
+No new dependency was added. Full race tests, vet, parser fuzzing and private
+C Tor interoperability pass. Hosting remains experimental: vanguards, PoW,
+restricted discovery and seamless introduction replacement are not implemented.

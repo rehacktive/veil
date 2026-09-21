@@ -52,12 +52,7 @@ func Blind(key [32]byte, period, minutes uint64) (blinded, subcredential [32]byt
 	if e != nil {
 		return blinded, subcredential, ErrAddress
 	}
-	b := append([]byte("Derive temporary signing key\x00"), key[:]...)
-	b = append(b, []byte("(15112221349535400772501151409588531511454012693041857206046113283949847762202, 46316835694926478169428394003475163141307993866256225615783033603165251855960)key-blind")...)
-	b = binary.BigEndian.AppendUint64(b, period)
-	b = binary.BigEndian.AppendUint64(b, minutes)
-	h := sha3.Sum256(b)
-	scalar, e := new(edwards25519.Scalar).SetBytesWithClamping(h[:])
+	scalar, e := blindingFactor(key, period, minutes)
 	if e != nil {
 		return blinded, subcredential, e
 	}
@@ -65,4 +60,23 @@ func Blind(key [32]byte, period, minutes uint64) (blinded, subcredential [32]byt
 	cred := sha3.Sum256(append([]byte("credential"), key[:]...))
 	subcredential = sha3.Sum256(append(append([]byte("subcredential"), cred[:]...), blinded[:]...))
 	return blinded, subcredential, nil
+}
+
+func blindingFactor(key [32]byte, period, minutes uint64) (*edwards25519.Scalar, error) {
+	b := append([]byte("Derive temporary signing key\x00"), key[:]...)
+	b = append(b, []byte("(15112221349535400772501151409588531511454012693041857206046113283949847762202, 46316835694926478169428394003475163141307993866256225615783033603165251855960)key-blind")...)
+	b = binary.BigEndian.AppendUint64(b, period)
+	b = binary.BigEndian.AppendUint64(b, minutes)
+	h := sha3.Sum256(b)
+	return new(edwards25519.Scalar).SetBytesWithClamping(h[:])
+}
+
+func Address(key [32]byte) (string, error) {
+	check := sha3.Sum256(join([]byte(".onion checksum"), key[:], []byte{3}))
+	raw := join(key[:], check[:2], []byte{3})
+	name := strings.ToLower(base32.StdEncoding.WithPadding(base32.NoPadding).EncodeToString(raw)) + ".onion"
+	if _, err := ParseAddress(name); err != nil {
+		return "", err
+	}
+	return name, nil
 }

@@ -173,3 +173,15 @@ blinded key and isolation group. Floors survive plaintext cache expiry until the
 period ends; live floors are not evicted under memory pressure. This cannot detect
 a rollback across process restarts or a descriptor that predates the first one
 seen within a scope. There are no new module dependencies or cryptographic formats.
+
+## Native onion hosting references
+
+The 0.13 hosting implementation follows the Tor Project specifications for
+[descriptor publication and overlapping periods](https://spec.torproject.org/rend-spec/deriving-keys.html),
+[descriptor encryption](https://spec.torproject.org/rend-spec/hsdesc-encrypt.html),
+[blinded signing](https://spec.torproject.org/rend-spec/keyblinding-scheme.html),
+[introduction registration and hs-ntor](https://spec.torproject.org/rend-spec/introduction-protocol.html),
+and [service rendezvous](https://spec.torproject.org/rend-spec/rendezvous-protocol.html).
+The local C Tor 0.4.9.12 source and executable provide an independent peer for
+ESTABLISH_INTRO, descriptor acceptance, client decryption and incoming streams.
+No Tor process or Rust implementation is used by the production host.

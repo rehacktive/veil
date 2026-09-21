@@ -62,6 +62,7 @@ type Circuit struct {
 	ipv6     bool
 	window   int
 	endHop   atomic.Int32
+	binding  [20]byte      // Final-hop ntor binding; used only for ESTABLISH_INTRO.
 	hs       *onionCircuit // Access under mu; purpose and endpoint are immutable after construction.
 }
 
@@ -82,7 +83,7 @@ func (c *Circuit) start(lifetime context.Context) {
 		defer c.wg.Done()
 		for {
 			m, err := c.receiveRelay(c.ctx)
-			if err == nil && (m.Command == cell.RelayRendezvous2 || m.Command == cell.RelayRendezvousEstablished || m.Command == cell.RelayIntroduceAck) {
+			if err == nil && (m.Command == cell.RelayRendezvous2 || m.Command == cell.RelayRendezvousEstablished || m.Command == cell.RelayIntroduceAck || m.Command == cell.RelayIntroEstablished || m.Command == cell.RelayIntroduce2) {
 				err = c.acceptOnionControl(m)
 			}
 			if err == nil && m.Command == cell.RelayExtended2 {
@@ -151,11 +152,18 @@ func (c *Circuit) send(ctx context.Context, hop int, m cell.RelayMessage, prepar
 		if m.StreamID != 0 && hop != int(c.endHop.Load()) {
 			return tag, fmt.Errorf("%w: stream message must target exit", ErrProtocol)
 		}
+	case cell.RelayConnected:
+		c.mu.Lock()
+		service := c.hs != nil && c.hs.purpose == OnionServiceRendezvous
+		c.mu.Unlock()
+		if !service || hop != 3 || m.StreamID == 0 {
+			return tag, ErrProtocol
+		}
 	case cell.RelayBegin, cell.RelayBeginDir, cell.RelayData, cell.RelayEnd, cell.RelayResolve:
 		if hop != int(c.endHop.Load()) || m.StreamID == 0 {
 			return tag, fmt.Errorf("%w: stream message must target exit with nonzero ID", ErrProtocol)
 		}
-	case cell.RelayEstablishRendezvous, cell.RelayIntroduce1:
+	case cell.RelayEstablishIntro, cell.RelayRendezvous1, cell.RelayEstablishRendezvous, cell.RelayIntroduce1:
 		if err := c.checkOnionSend(hop, m); err != nil {
 			return tag, err
 		}
@@ -313,9 +321,16 @@ func (c *Circuit) receiveRelay(ctx context.Context) (Message, error) {
 			if m.StreamID != 0 && hop != int(c.endHop.Load()) {
 				return Message{}, fmt.Errorf("%w: stream SENDME from wrong hop", ErrProtocol)
 			}
-		case cell.RelayBegin, cell.RelayBeginDir, cell.RelayExtend, cell.RelayExtended, cell.RelayExtend2, cell.RelayTruncate, cell.RelayResolve:
+		case cell.RelayBegin:
+			c.mu.Lock()
+			service := c.hs != nil && c.hs.purpose == OnionServiceRendezvous
+			c.mu.Unlock()
+			if !service || hop != 3 || m.StreamID == 0 {
+				return Message{}, ErrProtocol
+			}
+		case cell.RelayBeginDir, cell.RelayExtend, cell.RelayExtended, cell.RelayExtend2, cell.RelayTruncate, cell.RelayResolve:
 			return Message{}, fmt.Errorf("%w: unexpected inbound relay command", ErrProtocol)
-		case cell.RelayRendezvous2, cell.RelayRendezvousEstablished, cell.RelayIntroduceAck:
+		case cell.RelayIntroEstablished, cell.RelayIntroduce2, cell.RelayRendezvous2, cell.RelayRendezvousEstablished, cell.RelayIntroduceAck:
 			if hop != 2 || m.StreamID != 0 {
 				return Message{}, ErrProtocol
 			}

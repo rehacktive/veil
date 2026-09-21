@@ -204,6 +204,9 @@ func build(lifetime context.Context, hops [3]hop, attempt guardAttempt, timeout 
 		if e != nil {
 			return nil, e
 		}
+		if i == 2 {
+			c.binding = keys.Binding
+		}
 		if e = c.crypto.AddHop(keys); e != nil {
 			return nil, e
 		}

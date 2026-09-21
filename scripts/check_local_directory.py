@@ -153,6 +153,7 @@ def main():
     parser.add_argument("--gencert", required=True, type=pathlib.Path)
     parser.add_argument("--veil", default=pathlib.Path("bin/veil"), type=pathlib.Path)
     mode = parser.add_mutually_exclusive_group()
+    mode.add_argument("--service-test", type=pathlib.Path, help="run native onion hosting tests with a private C Tor SOCKS client")
     mode.add_argument("--watch", action="store_true", help="also verify scheduled refresh and warm restart")
     mode.add_argument("--demo", action="store_true", help="run directory-watch interactively until Ctrl-C, with generated temporary configuration")
     mode.add_argument("--circuit-test", type=pathlib.Path, help="run a compiled Go circuit test binary against three explicit local test hops")
@@ -163,7 +164,7 @@ def main():
     if args.proxy_check and not args.proxy_demo:
         parser.error("--proxy-check requires --proxy-demo")
     tor, gencert, veil = (str(p.resolve(strict=True)) for p in (args.tor, args.gencert, args.veil))
-    test_path = args.proxy_demo or args.stream_test or args.circuit_test
+    test_path = args.service_test or args.proxy_demo or args.stream_test or args.circuit_test
     application_test = bool(args.stream_test or args.proxy_demo)
     circuit_test = str(test_path.resolve(strict=True)) if test_path else None
     processes, logs = [], []
@@ -185,6 +186,14 @@ def main():
             if circuit_test:
                 common.append("ExtendAllowPrivateAddresses 1")
             authority = [f'DataDirectory "{data}"', "Nickname GoAuthority", f"ORPort 127.0.0.1:{authority_or}", f"DirPort 127.0.0.1:{authority_dir}", f"ControlPort 127.0.0.1:{control}", "CookieAuthentication 1", "AuthoritativeDirectory 1", "V3AuthoritativeDirectory 1", "V3AuthVotingInterval 20 seconds", "V3AuthVoteDelay 4 seconds", "V3AuthDistDelay 4 seconds", "TestingV3AuthInitialVotingInterval 20 seconds", "TestingV3AuthInitialVoteDelay 4 seconds", "TestingV3AuthInitialDistDelay 4 seconds", "TestingDirAuthVoteGuard *", "TestingAuthDirTimeToLearnReachability 0", "AuthDirMaxServersPerAddr 0"]
+            if args.service_test:
+                # Match C Tor's testing-network onion period (24 voting rounds)
+                # to Veil's consensus-driven minimum of 30 minutes.
+                authority = [line.replace("20 seconds", "75 seconds") for line in authority]
+                authority.append("ConsensusParams hsdir_interval=30")
+                bandwidth_file = root / "bandwidths"
+                bandwidth_file.write_text(str(int(time.time())) + "\n")
+                authority.append(f'V3BandwidthsFile "{bandwidth_file}"')
             if application_test:
                 authority += ["ExitRelay 1", "ExitPolicyRejectPrivate 0", "ExitPolicyRejectLocalInterfaces 0", f"ExitPolicy accept 127.0.0.1:{echo_port},reject *:*"]
             authority_common = [line for line in common if not line.startswith(("ExitRelay ", "ExitPolicy "))] if application_test else common
@@ -200,7 +209,7 @@ def main():
             config.write_text("\n".join(authority_common + authority + [authority_line]) + "\n")
             configs = [config]
             peers = [(data, authority_or, control)]
-            for i in range(2):
+            for i in range(4 if args.service_test else 2):
                 relay_data = root / f"relay{i}"
                 relay_data.mkdir(mode=0o700)
                 cfg = root / f"relay{i}.torrc"
@@ -208,17 +217,29 @@ def main():
                 cfg.write_text("\n".join(common + [f'DataDirectory "{relay_data}"', f"Nickname GoRelay{i}", f"ORPort 127.0.0.1:{relay_or}", "DirPort 0", f"ControlPort {relay_control}", "CookieAuthentication 1", authority_line]) + "\n")
                 peers.append((relay_data, relay_or, relay_control))
                 configs.append(cfg)
+            service_socks = free_port()
+            if args.service_test:
+                for cfg in configs:
+                    with cfg.open("a") as f:
+                        f.write("\nTestingDirAuthVoteHSDir *\n")
+                client_data = root / "tor-client"
+                client_data.mkdir(mode=0o700)
+                cfg = root / "client.torrc"
+                cfg.write_text("\n".join([line for line in common if not line.startswith("SocksPort ")] + [f'DataDirectory "{client_data}"', "ClientOnly 1", "EnforceDistinctSubnets 0", "UseEntryGuards 0", "VanguardsLiteEnabled 0", f"SocksPort 127.0.0.1:{service_socks}", authority_line]) + "\n")
+                service_client_config = cfg
             for cfg in configs:
                 log_path = cfg.with_suffix(".log")
                 log = log_path.open("w")
                 logs.append((log, log_path))
                 processes.append(subprocess.Popen([tor, "--defaults-torrc", "/dev/null", "-f", str(cfg)], stdout=log, stderr=subprocess.STDOUT))
-            deadline = time.monotonic() + 150
+            deadline = time.monotonic() + (240 if args.service_test else 150)
             bootstrap_config = root / "bootstrap.json"
             if args.demo or args.proxy_demo:
                 print("Starting a private localhost Tor network; bootstrap can take up to 150 seconds...", file=sys.stderr, flush=True)
             last_error = ""
             while time.monotonic() < deadline:
+                if args.service_test and all((peer_data / "fingerprint").exists() for peer_data, _, _ in peers):
+                    bandwidth_file.write_text(str(int(time.time())) + "\n" + "".join("node_id=$" + (peer_data / "fingerprint").read_text().split()[1] + " bw=1000\n" for peer_data, _, _ in peers))
                 if any(p.poll() is not None for p in processes):
                     raise RuntimeError("Tor process exited")
                 try:
@@ -230,7 +251,7 @@ def main():
                     result = subprocess.run([veil, "directory-bootstrap", "-config", str(bootstrap_config), "-state", str(root / "client-state"), "-timeout", "10s"], text=True, capture_output=True, timeout=12)
                     if result.returncode == 0:
                         metadata = json.loads(result.stdout)
-                        if metadata["relays"] >= 3:
+                        if metadata["relays"] >= (5 if args.service_test else 3):
                             assert metadata["authority_signatures"] == 1
                             cache = root / "client-state" / "directory.json"
                             assert cache.stat().st_mode & 0o777 == 0o600
@@ -246,6 +267,14 @@ def main():
                                     onion = next(line.split()[1] for line in desc.splitlines() if line.startswith(b"ntor-onion-key "))
                                     pins.append({"Address": f"127.0.0.1:{peer_or}", "RSA": (peer_data / "fingerprint").read_text().split()[1], "Ed25519": (peer_data / "keys/ed25519_master_id_public_key").read_bytes()[32:].hex(), "NTor": base64.b64decode(onion + b"=").hex()})
                                 environment = dict(os.environ, VEIL_TEST_CIRCUIT_PEERS=json.dumps(pins), VEIL_TEST_STREAM_PORT=str(echo_port))
+                                if args.service_test:
+                                    client_log_path = service_client_config.with_suffix(".log")
+                                    client_log = client_log_path.open("w")
+                                    logs.append((client_log, client_log_path))
+                                    processes.append(subprocess.Popen([tor, "--defaults-torrc", "/dev/null", "-f", str(service_client_config)], stdout=client_log, stderr=subprocess.STDOUT))
+                                    environment.update(VEIL_TEST_HOST_CONFIG=str(bootstrap_config), VEIL_TEST_HOST_STATE=str(root / "client-state"), VEIL_TEST_HOST_SOCKS=f"127.0.0.1:{service_socks}")
+                                    subprocess.run([circuit_test, "-test.run", "^TestLocalTorHosting$", "-test.v", "-test.timeout", "4m"], env=environment, check=True, timeout=245)
+                                    return
                                 if args.proxy_demo:
                                     proxy_demo(circuit_test, environment, processes, args.proxy_check)
                                     assert b"veil.test" in dns_queries, "exit did not perform the DNS lookup"

@@ -1,4 +1,4 @@
-.PHONY: build test check security fuzz clean proxy-demo proxy-check public-proxy
+.PHONY: build test check security fuzz clean proxy-demo proxy-check public-proxy service-check
 
 build:
 	go build -trimpath -o bin/veil ./cmd/veil
@@ -38,3 +38,6 @@ proxy-check:
 
 public-proxy: build
 	./bin/veil proxy -public -state ./state-public -listen 127.0.0.1:9050
+
+service-check:
+	python3 scripts/service_check.py

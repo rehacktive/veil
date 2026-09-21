@@ -2,7 +2,7 @@
 
 Veil is a staged, native Go rewrite of [Arti](https://github.com/zydou/arti), the Rust Tor implementation. This is an independent, experimental project, not an official Tor Project release.
 
-**Current stage: experimental SOCKS5 client with public internet and v3 onion support.** It authenticates relay channels, downloads and verifies directory documents over native one-hop directory circuits (pinned CREATE_FAST for public bootstrap, ntor afterward), refreshes private caches, and maintains sampled/confirmed/primary guards. It selects compatible guard/middle/exit paths and builds them with CREATE2, EXTEND2, and type-2 ntor. It multiplexes TCP streams through a cancellable Go `net.Conn` API with authenticated SENDME flow control and exit-side DNS. `veil proxy` exposes those streams through a loopback SOCKS5 CONNECT listener, with circuit reuse inside explicit isolation scopes and dedicated circuits for untagged connections. V3 onion connections use authenticated descriptors, hs-ntor introductions/rendezvous, and an encrypted service hop. The Go implementation needs no Rust runtime, C Tor process, or cgo. It uses `filippo.io/edwards25519` for public-key blinding and coordinate conversion. An optional interoperability test launches C Tor separately as a test peer.
+**Current stage: experimental SOCKS5 client and v3 onion host.** It authenticates relay channels, downloads and verifies directory documents over native one-hop directory circuits (pinned CREATE_FAST for public bootstrap, ntor afterward), refreshes private caches, and maintains sampled/confirmed/primary guards. It selects compatible guard/middle/exit paths and builds them with CREATE2, EXTEND2, and type-2 ntor. It multiplexes TCP streams through a cancellable Go `net.Conn` API with authenticated SENDME flow control and exit-side DNS. `veil proxy` exposes those streams through a loopback SOCKS5 CONNECT listener, with circuit reuse inside explicit isolation scopes and dedicated circuits for untagged connections. V3 onion connections use authenticated descriptors, hs-ntor introductions/rendezvous, and an encrypted service hop. The Go implementation needs no Rust runtime, C Tor process, or cgo. It uses `filippo.io/edwards25519` for public-key blinding and coordinate conversion. An optional interoperability test launches C Tor separately as a test peer.
 
 ## Browse the public internet
 
@@ -93,10 +93,87 @@ simultaneous three-hop circuits per connection slot. Descriptors are bounded to
 attempts for supported transient failures. Authentication failures stop setup.
 
 This supports public v3 services. Client authorization/restricted discovery,
-proof-of-work solving, onion subdomains, legacy v2 addresses and service hosting
-are not implemented. Introduction points
+proof-of-work solving, onion subdomains, legacy v2 addresses
+are not implemented. Experimental service hosting is described below. Introduction points
 must appear with matching identity and ntor keys in the current verified
 consensus. Services requiring the unsupported features may fail to connect.
+
+## Host a v3 onion service
+
+The experimental native host maps one onion TCP port to one local TCP server.
+For example, first start a test site in a directory containing only content you
+intend to serve:
+
+```sh
+python3 -m http.server 8080 --bind 127.0.0.1 --directory /path/to/test-site
+```
+
+Then, in another terminal:
+
+```sh
+make build
+./bin/veil service -public -state ./state-service -port 80 -target 127.0.0.1:8080 -debug
+```
+
+`service_ready` reports successful publication to every selected HSDir in both
+periods. Some HSDirs may be unavailable: the host retries, and clients may already
+connect while publication is partial. `service_descriptor_published` reports the
+successful/total uploads per period; the hostname file alone is not readiness.
+Read the address from `state-service/hostname`, then open
+`http://ADDRESS.onion/` with a Tor client. If a separate Veil proxy is already
+running on port 9050:
+
+```sh
+curl --fail --max-time 180 --noproxy '' --socks5-hostname 127.0.0.1:9050 \
+  "http://$(cat state-service/hostname)/"
+```
+
+Keep `state-service` across restarts: `onion-identity` stores the private identity
+seed and a durable descriptor revision counter. Losing that file loses the
+address; sharing it lets someone impersonate the service. State is private and
+exclusively locked. Use a different state directory from your browsing proxy.
+The `hostname` file is created during initialization; its existence alone does
+not mean the descriptor has been published. `-debug` reports that progress;
+without it, normal hosting operation is quiet.
+
+Hosting uses three introduction points, signed/encrypted descriptors in two
+overlapping publication periods, service-side hs-ntor, and native incoming
+streams. Publication is retried and renewed, introduction keys rotate, and
+failed introduction circuits are rebuilt without resetting persistent guards.
+Only the configured virtual port is accepted. The backend must be a numeric
+loopback address; client-supplied addresses are never dialed directly.
+
+Defaults bound the host to 16 rendezvous circuits and 32 forwarded streams,
+5 minutes idle per stream and a 1-hour circuit lifetime. Replays are rejected,
+introduction processing is rate-limited, and replay caches have fixed bounds.
+Each introduction generation lasts at most two hours. This first implementation
+restarts the generation on introduction failure or rotation, closing its active
+streams; seamless draining/replacement is future work. Client rendezvous links
+must exactly match the supported links of a relay in the live consensus.
+
+Public-network interoperability has been verified with an independent C Tor
+client: HTTP, three concurrent 2.4 MB downloads and unmapped-port rejection.
+See [VALIDATION.md](VALIDATION.md) for results and partial-publication limitations.
+
+This is a first hosting milestone, not production anonymity parity. Restricted
+services/client authorization, PoW defenses, vanguards, multiple port mappings,
+offline identity keys and transparent introduction rotation remain unimplemented.
+The normal Tor identity/guard/descriptor verification rules remain in force.
+
+For a reproducible private-network interoperability check, with C Tor and
+`tor-gencert` installed:
+
+```sh
+make service-check
+# Or select existing test-peer executables:
+python3 scripts/service_check.py --tor /path/to/tor --tor-gencert /path/to/tor-gencert
+```
+
+The check runs a temporary authority, relays, an independent C Tor client and a
+loopback HTTP fixture; no public service is published. It builds a test-only
+binary with explicit localhost hops because normal subnet exclusions reject
+localhost networks. The `veiltest` helpers are absent from the production binary.
+C Tor is a test peer only; `veil service` itself needs no C Tor process.
 
 ## Onion-only (dark) mode
 

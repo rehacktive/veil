@@ -20,6 +20,8 @@ const (
 	OnionDirectory OnionPurpose = iota + 1
 	OnionIntroduction
 	OnionRendezvous
+	OnionServiceIntroduction
+	OnionServiceRendezvous
 )
 
 type onionCircuit struct {
@@ -32,7 +34,7 @@ type onionCircuit struct {
 // BuildInternal uses the verified selector and persistent guard accounting for
 // an onion protocol circuit, without treating its final relay as an exit.
 func BuildInternal(ctx context.Context, s *directory.Snapshot, guards *directory.GuardStore, target *directory.Relay, purpose OnionPurpose, timeout time.Duration) (*Circuit, error) {
-	if guards == nil || purpose < OnionDirectory || purpose > OnionRendezvous || timeout < 0 || (target == nil && purpose != OnionRendezvous) {
+	if guards == nil || purpose < OnionDirectory || purpose > OnionServiceRendezvous || timeout < 0 || (target == nil && purpose != OnionRendezvous && purpose != OnionServiceIntroduction) {
 		return nil, ErrProtocol
 	}
 	if !s.Valid(time.Now()) {
@@ -44,7 +46,10 @@ func BuildInternal(ctx context.Context, s *directory.Snapshot, guards *directory
 	}
 	var excluded []directory.Fingerprint
 	if target != nil {
-		excluded = []directory.Fingerprint{target.Identity()}
+		excluded, err = s.InternalGuardExclusions(*target, time.Now())
+		if err != nil {
+			return nil, err
+		}
 	}
 	a, err := guards.Select(s, false, excluded, time.Now())
 	if err != nil {
@@ -79,6 +84,12 @@ func (c *Circuit) checkOnionSend(hop int, m cell.RelayMessage) error {
 	if c.hs == nil || hop != 2 || m.StreamID != 0 || c.hs.stage != 1 {
 		return ErrProtocol
 	}
+	if m.Command == cell.RelayEstablishIntro && c.hs.purpose == OnionServiceIntroduction && len(m.Data) >= 134 {
+		return nil
+	}
+	if m.Command == cell.RelayRendezvous1 && c.hs.purpose == OnionServiceRendezvous && len(m.Data) == 84 {
+		return nil
+	}
 	if m.Command == cell.RelayEstablishRendezvous && c.hs.purpose == OnionRendezvous && len(m.Data) == 20 {
 		return nil
 	}
@@ -103,6 +114,28 @@ func (c *Circuit) acceptOnionControl(m Message) (result error) {
 	}
 	h := c.hs
 	switch m.Command {
+	case cell.RelayIntroEstablished:
+		if h.purpose != OnionServiceIntroduction || h.stage != 1 {
+			return ErrProtocol
+		}
+		if len(m.Data) > 0 {
+			b := m.Data[1:]
+			for j := 0; j < int(m.Data[0]); j++ {
+				if len(b) < 2 || int(b[1]) > len(b)-2 {
+					return ErrProtocol
+				}
+				b = b[2+int(b[1]):]
+			}
+			if len(b) != 0 {
+				return ErrProtocol
+			}
+		}
+		h.stage = 2
+	case cell.RelayIntroduce2:
+		if h.purpose != OnionServiceIntroduction || h.stage != 2 || len(m.Data) < 120 || len(m.Data) > 490 {
+			return ErrProtocol
+		}
+
 	case cell.RelayRendezvousEstablished:
 		if h.purpose != OnionRendezvous || h.stage != 1 || len(m.Data) != 0 {
 			return ErrProtocol

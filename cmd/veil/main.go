@@ -16,13 +16,14 @@ import (
 	"veil/cell"
 )
 
-const version = "0.12.0-dev"
+const version = "0.13.0-dev"
 
-const usage = `Veil: a native Go rewrite of Arti, stage 7 (SOCKS5 and v3 onion client)
+const usage = `Veil: a native Go rewrite of Arti, stage 8 (SOCKS5, v3 onion client and hosting)
 
 Usage:
   veil version
   veil proxy (-public | -config FILE) -state DIRECTORY [-listen 127.0.0.1:9050] [-onion-only] [-debug]
+  veil service (-public | -config FILE) -state DIRECTORY [-port 80] [-target 127.0.0.1:8080] [-debug]
   veil inspect [-link 4|5] [-handshake] [-payload] < cells.bin
   veil channel-check -address IP:port -rsa HEX -ed25519 HEX [-timeout 30s]
   veil directory-check -certificates FILE -consensus FILE -microdescriptors FILE -authorities CSV [-at RFC3339]
@@ -81,8 +82,10 @@ func runContext(ctx context.Context, args []string, in io.Reader, out, diagnosti
 		if len(args) != 1 {
 			return errors.New("version takes no arguments")
 		}
-		_, err := fmt.Fprintf(out, "Veil %s (stage 7; native SOCKS5 and v3 onion client)\n", version)
+		_, err := fmt.Fprintf(out, "Veil %s (stage 8; native SOCKS5, v3 onion client and hosting)\n", version)
 		return err
+	case "service":
+		return hostService(ctx, args[1:], diagnostics)
 	case "proxy":
 		return proxy(ctx, args[1:], out, diagnostics)
 	case "inspect":

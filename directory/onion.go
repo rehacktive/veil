@@ -87,6 +87,13 @@ func (s *Snapshot) OnionDirectories(blinded [32]byte, now time.Time) ([]Relay, e
 	if err != nil {
 		return nil, err
 	}
+	return s.onionDirectories(blinded, period, minutes, srv, false, now)
+}
+
+func (s *Snapshot) onionDirectories(blinded [32]byte, period, minutes uint64, srv [32]byte, store bool, now time.Time) ([]Relay, error) {
+	if !s.Valid(now) {
+		return nil, ErrTime
+	}
 	type entry struct {
 		index [32]byte
 		relay Relay
@@ -109,6 +116,9 @@ func (s *Snapshot) OnionDirectories(blinded [32]byte, now time.Time) ([]Relay, e
 		return def
 	}
 	replicas, spread := param("hsdir_n_replicas", 2, 16), param("hsdir_spread_fetch", 3, 128)
+	if store {
+		spread = param("hsdir_spread_store", 4, 128)
+	}
 	seen := map[Fingerprint]bool{}
 	var out []Relay
 	for replica := int64(1); replica <= replicas; replica++ {
@@ -153,6 +163,25 @@ func (s *Snapshot) RelayByIdentity(rsa Fingerprint, ed [32]byte) (Relay, error) 
 	return Relay{}, ErrPath
 }
 
+// InternalGuardExclusions applies a fixed endpoint's family and subnet
+// restrictions before choosing from the persistent guard sample.
+func (s *Snapshot) InternalGuardExclusions(target Relay, now time.Time) ([]Fingerprint, error) {
+	if !s.Valid(now) {
+		return nil, ErrTime
+	}
+	r, err := s.RelayByIdentity(target.Identity(), target.Target().Identity.Ed25519)
+	if err != nil || !eligible(r) {
+		return nil, ErrPath
+	}
+	var excluded []Fingerprint
+	for _, candidate := range s.relays {
+		if conflict(r, candidate) {
+			excluded = append(excluded, candidate.Identity())
+		}
+	}
+	return excluded, nil
+}
+
 // SelectInternalPath selects a three-hop path ending at a verified relay with
 // no exit-policy requirement. A nil target selects a random rendezvous relay.
 func (s *Snapshot) SelectInternalPath(guard Relay, target *Relay, now time.Time) (Path, error) {
@@ -177,9 +206,19 @@ func (s *Snapshot) SelectInternalPath(guard Relay, target *Relay, now time.Time)
 		}
 		ends = append(ends, r)
 	}
-	end, err := choose(s, ends, "middle")
-	if err != nil {
-		return Path{}, fmt.Errorf("internal path: %w", err)
+	var end Relay
+	if target != nil {
+		// A protocol-selected endpoint (such as an HSDir) is mandatory, not a
+		// randomly sampled middle. Its middle-position weight may be zero.
+		if len(ends) != 1 {
+			return Path{}, fmt.Errorf("internal path: %w", ErrPath)
+		}
+		end = ends[0]
+	} else {
+		end, err = choose(s, ends, "middle")
+		if err != nil {
+			return Path{}, fmt.Errorf("internal path: %w", err)
+		}
 	}
 	var middles []Relay
 	for _, r := range s.relays {
@@ -192,4 +231,96 @@ func (s *Snapshot) SelectInternalPath(guard Relay, target *Relay, now time.Time)
 		return Path{}, err
 	}
 	return Path{g, middle, end}, nil
+}
+
+// ServicePeriod describes one of the two overlapping publication rings.
+type ServicePeriod struct {
+	Period, Minutes uint64
+	SRV             [32]byte
+}
+
+func (s *Snapshot) ServicePeriods(now time.Time) ([]ServicePeriod, error) {
+	period, minutes, _, err := s.OnionPeriod(now)
+	if err != nil {
+		return nil, err
+	}
+	c := s.consensus
+	vote := int64(c.freshUntil.Sub(c.validAfter) / time.Second)
+	currentStart := c.validAfter.Unix() - ((c.validAfter.Unix()/vote)%24)*vote
+	if a := c.sharedRandom[1]; len(a) == 3 {
+		n, e := number(a[2], 63)
+		if e != nil {
+			return nil, e
+		}
+		if n > 9223372036854775807 {
+			return nil, ErrDocument
+		}
+		currentStart = int64(n)
+	}
+	if minutes < 30 || minutes > 14400 || period > 9223372036854775807/864000 {
+		return nil, ErrTime
+	}
+	start := int64(period)*int64(minutes)*60 + 12*vote
+	first := period
+	if start >= currentStart {
+		if first == 0 {
+			return nil, ErrTime
+		}
+		first--
+	}
+	out := make([]ServicePeriod, 2)
+	for j := 0; j < 2; j++ {
+		p := first + uint64(j)
+		var srv [32]byte
+		if args := c.sharedRandom[j]; len(args) >= 2 {
+			b, e := unbase64(args[1], 32)
+			if e != nil {
+				return nil, e
+			}
+			copy(srv[:], b)
+		} else {
+			b := binary.BigEndian.AppendUint64([]byte("shared-random-disaster"), minutes)
+			b = binary.BigEndian.AppendUint64(b, p)
+			srv = sha3.Sum256(b)
+		}
+		out[j] = ServicePeriod{p, minutes, srv}
+	}
+	return out, nil
+}
+func (s *Snapshot) ServiceDirectories(blinded [32]byte, p ServicePeriod, now time.Time) ([]Relay, error) {
+	periods, err := s.ServicePeriods(now)
+	if err != nil {
+		return nil, err
+	}
+	valid := false
+	for _, candidate := range periods {
+		if candidate == p {
+			valid = true
+		}
+	}
+	if !valid {
+		return nil, ErrTime
+	}
+	return s.onionDirectories(blinded, p.Period, p.Minutes, p.SRV, true, now)
+}
+func (s *Snapshot) SelectIntroduction(excluded []Fingerprint, now time.Time) (Relay, error) {
+	if !s.Valid(now) {
+		return Relay{}, ErrTime
+	}
+	var candidates []Relay
+	for _, r := range s.relays {
+		if !eligible(r) || !r.status.protocols.has("HSIntro", 4) {
+			continue
+		}
+		skip := false
+		for _, id := range excluded {
+			if r.Identity() == id {
+				skip = true
+			}
+		}
+		if !skip {
+			candidates = append(candidates, r)
+		}
+	}
+	return choose(s, candidates, "middle")
 }

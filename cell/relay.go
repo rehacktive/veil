@@ -27,6 +27,10 @@ const (
 	RelayBeginDir              RelayCommand = 13
 	RelayExtend2               RelayCommand = 14
 	RelayExtended2             RelayCommand = 15
+	RelayEstablishIntro        RelayCommand = 32
+	RelayIntroduce2            RelayCommand = 35
+	RelayRendezvous1           RelayCommand = 36
+	RelayIntroEstablished      RelayCommand = 38
 	RelayEstablishRendezvous   RelayCommand = 33
 	RelayIntroduce1            RelayCommand = 34
 	RelayRendezvous2           RelayCommand = 37

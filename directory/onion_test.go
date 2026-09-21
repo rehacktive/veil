@@ -95,3 +95,50 @@ func TestOnionInternalPathAndDirectoryEligibility(t *testing.T) {
 		t.Fatal("non-HSDir selected", err)
 	}
 }
+
+func TestInternalFixedEndpointWithZeroMiddleWeight(t *testing.T) {
+	s := pathFixture()
+	now := time.Now()
+	// Mainnet can assign Exit relays zero middle weight. HSDir ring selection
+	// still requires reaching such a relay, while random selection excludes it.
+	s.consensus.weights["Wme"] = 0
+	for i := range s.relays {
+		s.relays[i].status.protocols, _ = parseProtocols([]string{"Link=4-5", "Relay=2", "HSDir=2", "HSRend=1"})
+	}
+	p, err := s.SelectInternalPath(s.relays[0], &s.relays[2], now)
+	if err != nil || p.Exit.Identity() != s.relays[2].Identity() {
+		t.Fatalf("fixed endpoint with zero middle weight: %v", err)
+	}
+	p, err = s.SelectInternalPath(s.relays[0], nil, now)
+	if err == nil || p.Exit.Identity() == s.relays[2].Identity() {
+		t.Fatal("random endpoint bypassed bandwidth weighting")
+	}
+	delete(s.relays[2].status.flags, "Running")
+	if _, err := s.SelectInternalPath(s.relays[0], &s.relays[2], now); !errors.Is(err, ErrPath) {
+		t.Fatal("unavailable fixed endpoint accepted", err)
+	}
+}
+
+func TestInternalGuardExclusions(t *testing.T) {
+	for _, kind := range []string{"family", "subnet"} {
+		t.Run(kind, func(t *testing.T) {
+			s := pathFixture()
+			if kind == "family" {
+				s.relays[0].descriptor.family[s.relays[2].Identity()] = true
+				s.relays[2].descriptor.family[s.relays[0].Identity()] = true
+			} else {
+				s.relays[0].status.address = s.relays[2].Address()
+			}
+			ids, err := s.InternalGuardExclusions(s.relays[2], time.Now())
+			if err != nil || len(ids) != 2 || ids[0] != s.relays[0].Identity() || ids[1] != s.relays[2].Identity() {
+				t.Fatalf("guard exclusions: %v %v", ids, err)
+			}
+			if _, err := s.SelectInternalPath(s.relays[0], &s.relays[2], time.Now()); !errors.Is(err, ErrPath) {
+				t.Fatal("conflicting path accepted", err)
+			}
+			if _, err := s.InternalGuardExclusions(s.relays[2], time.Now().Add(3*time.Hour)); !errors.Is(err, ErrTime) {
+				t.Fatal("expired directory accepted", err)
+			}
+		})
+	}
+}

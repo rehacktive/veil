@@ -176,7 +176,7 @@ func openPublicDirectory(state string) (*directory.Manager, *directory.GuardStor
 	if err != nil {
 		return nil, nil, err
 	}
-	manager, err := directory.NewManager(cache, guards, sources, directory.ManagerOptions{Attempts: 8, AttemptTimeout: 3 * time.Minute, RetryCap: 30 * time.Second})
+	manager, err := directory.NewManager(cache, guards, sources, directory.ManagerOptions{Attempts: 8, AttemptTimeout: 8 * time.Minute, RetryCap: 30 * time.Second})
 	return manager, guards, err
 }
 

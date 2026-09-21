@@ -148,6 +148,8 @@ type streamMux struct {
 	tags                         []relaycrypto.Tag
 	randomAfter                  int
 	randomSeen                   bool
+	accepted                     chan *IncomingStream
+	service                      bool
 	controls                     chan cell.RelayMessage
 	done                         chan struct{}
 }
@@ -295,6 +297,9 @@ func (m *streamMux) handle(msg Message) error {
 		m.packageWindow += 100
 		m.signal()
 		return nil
+	}
+	if msg.Command == cell.RelayBegin {
+		return m.incomingBegin(msg)
 	}
 	s := m.streams[msg.StreamID]
 	late, retired := m.retired[msg.StreamID]
