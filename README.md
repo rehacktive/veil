@@ -101,40 +101,97 @@ consensus. Services requiring the unsupported features may fail to connect.
 ## Host a v3 onion service
 
 The experimental native host maps one onion TCP port to one local TCP server.
-For example, first start a test site in a directory containing only content you
-intend to serve:
+This example publishes a small website as a v3 hidden service on the public Tor
+network. You need Go and Python 3; Veil itself does not need a C Tor process.
+Start each terminal in the Veil repository directory.
 
-```sh
-python3 -m http.server 8080 --bind 127.0.0.1 --directory /path/to/test-site
-```
+### 1. Create and serve a test page
 
-Then, in another terminal:
+In terminal 1, build Veil and create a temporary directory containing only the
+page you want to publish:
 
 ```sh
 make build
-./bin/veil service -public -state ./state-service -port 80 -target 127.0.0.1:8080 -debug
+site_dir=$(mktemp -d "${TMPDIR:-/tmp}/veil-site.XXXXXX")
+cat > "$site_dir/index.html" <<'HTML'
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<title>My Veil onion service</title>
+<h1>Hello from Veil!</h1>
+<p>This page is served through a native Go v3 onion service.</p>
+</html>
+HTML
+python3 -m http.server 8080 --bind 127.0.0.1 --directory "$site_dir"
 ```
+
+Leave this server running. You can check the page locally at
+`http://127.0.0.1:8080/`. The server listens only on loopback; no router port
+forwarding is needed.
+
+### 2. Start the onion service
+
+In terminal 2:
+
+```sh
+./bin/veil service -public -state ./state-service \
+  -port 80 -target 127.0.0.1:8080 -debug
+```
+
+Leave Veil running too. Onion port **80** forwards to local port **8080**.
+First bootstrap and descriptor publication can take several minutes.
+`-debug` shows progress in this terminal; omit it for quiet operation.
 
 `service_ready` reports successful publication to every selected HSDir in both
 periods. Some HSDirs may be unavailable: the host retries, and clients may already
 connect while publication is partial. `service_descriptor_published` reports the
 successful/total uploads per period; the hostname file alone is not readiness.
-Read the address from `state-service/hostname`, then open
-`http://ADDRESS.onion/` with a Tor client. If a separate Veil proxy is already
-running on port 9050:
+
+### 3. Open your onion website
+
+In terminal 3, print the complete URL:
 
 ```sh
-curl --fail --max-time 180 --noproxy '' --socks5-hostname 127.0.0.1:9050 \
-  "http://$(cat state-service/hostname)/"
+printf 'http://%s/\n' "$(cat ./state-service/hostname)"
 ```
 
-Keep `state-service` across restarts: `onion-identity` stores the private identity
-seed and a durable descriptor revision counter. Losing that file loses the
-address; sharing it lets someone impersonate the service. State is private and
-exclusively locked. Use a different state directory from your browsing proxy.
-The `hostname` file is created during initialization; its existence alone does
-not mean the descriptor has been published. `-debug` reports that progress;
-without it, normal hosting operation is quiet.
+Open that URL in Tor Browser. You should see **Hello from Veil!**. Use the
+`.onion` URL for this check; the loopback URL tests only the local web server.
+If the service is still publishing, allow it to progress and retry.
+
+Alternatively, test with curl through Veil's own SOCKS5 proxy. In another
+terminal, start a proxy with a separate state directory and leave it running:
+
+```sh
+./bin/veil proxy -public -onion-only -state ./state-public \
+  -listen 127.0.0.1:19050 -debug
+```
+
+After `socks5_ready`, run this in terminal 3:
+
+```sh
+curl --fail --max-time 180 --noproxy '' \
+  --socks5-hostname 127.0.0.1:19050 \
+  "http://$(cat ./state-service/hostname)/"
+```
+
+Curl should return the sample HTML above. The separate SOCKS port **19050** in
+this example avoids the usual Tor proxy port **9050**.
+
+### Stop or restart
+
+Press `Ctrl-C` in the service and web-server terminals to stop hosting. Stop the
+optional SOCKS proxy the same way. To host your own site, serve its directory on
+`127.0.0.1:8080` and rerun the same `veil service` command.
+
+Keep `state-service` across restarts to retain the same onion address.
+`onion-identity` stores the private identity seed and a durable descriptor
+revision counter. Losing that file loses the address; sharing it lets someone
+impersonate the service. Keep this directory private and out of version control.
+State is exclusively locked: the service and browsing proxy must use different
+state directories. The temporary sample page is separate from the service state.
+
+### Behavior and current limits
 
 Hosting uses three introduction points, signed/encrypted descriptors in two
 overlapping publication periods, service-side hs-ntor, and native incoming
