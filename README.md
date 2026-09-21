@@ -100,7 +100,9 @@ consensus. Services requiring the unsupported features may fail to connect.
 
 ## Host a v3 onion service
 
-The experimental native host maps one onion TCP port to one local TCP server.
+The experimental native host exposes one onion TCP port. The CLI forwards it to
+a local TCP server; Go applications can accept native streams through a
+[`net.Listener`](#accept-onion-connections-in-go) without a local TCP backend.
 This example publishes a small website as a v3 hidden service on the public Tor
 network. You need Go and Python 3; Veil itself does not need a C Tor process.
 Start each terminal in the Veil repository directory.
@@ -200,8 +202,8 @@ failed introduction circuits are rebuilt without resetting persistent guards.
 Only the configured virtual port is accepted. The backend must be a numeric
 loopback address; client-supplied addresses are never dialed directly.
 
-Defaults bound the host to 16 rendezvous circuits and 32 forwarded streams,
-5 minutes idle per stream and a 1-hour circuit lifetime. Replays are rejected,
+Defaults bound the host to 16 rendezvous circuits and 32 streams,
+5 minutes idle per forwarded stream and a 1-hour circuit lifetime. Replays are rejected,
 introduction processing is rate-limited, and replay caches have fixed bounds.
 Each introduction generation lasts at most two hours. This first implementation
 restarts the generation on introduction failure or rotation, closing its active
@@ -231,6 +233,52 @@ loopback HTTP fixture; no public service is published. It builds a test-only
 binary with explicit localhost hops because normal subnet exclusions reject
 localhost networks. The `veiltest` helpers are absent from the production binary.
 C Tor is a test peer only; `veil service` itself needs no C Tor process.
+
+### Accept onion connections in Go
+
+`service.Listen` returns a `net.Listener` backed directly by incoming onion
+streams. It starts the host in the background and requires an empty `Target`:
+
+```go
+listener, err := service.Listen(ctx, manager, guards, identity, service.Options{
+    Port: 80,
+})
+if err != nil {
+    return err
+}
+defer listener.Close()
+
+// Addr().String() is "<v3-address>.onion:80"; Network() is "onion".
+fmt.Println(listener.Addr())
+server := &http.Server{Handler: handler, ReadHeaderTimeout: 30 * time.Second}
+return server.Serve(listener)
+```
+
+The caller holds the state lock, bootstraps the directory manager, and keeps it
+running for the listener's lifetime. A complete example handles this setup and
+shutdown, with no TCP listener, C Tor process, or cgo:
+
+```sh
+go run ./examples/onion-listener -state ./state-listener -port 80
+```
+
+Returning from `Listen` does not mean the descriptors are published yet;
+`Accept` waits for incoming connections. A host failure unblocks `Accept` with
+an error matching `net.ErrClosed` and retaining the underlying cause.
+
+`Close` rejects pending streams and unblocks all waiting `Accept` calls. It
+preserves connections already accepted by the application; close those
+connections to let the host drain. Canceling the context passed to `Listen`
+stops the host and closes all its streams. Wait for `<-listener.Done()` before
+releasing the state lock or stopping its directory manager.
+
+`MaxStreams` bounds pending and accepted streams together. Applications own and
+must close accepted connections, and set their read/write deadlines; the
+forwarder's `IdleTimeout` does not apply. `LocalAddr` identifies the onion service;
+`RemoteAddr` is an anonymous stream label, not a client IP address. Circuit
+lifetime limits and the introduction-rotation interruptions described above
+still apply. `make service-check` exercises both forwarding and listener hosting
+with an independent C Tor client on a private test network.
 
 ## Onion-only (dark) mode
 

@@ -1,5 +1,5 @@
 // Package service hosts an experimental public v3 onion service over native Tor
-// circuits. It exposes exactly one virtual port to one numeric loopback backend.
+// circuits. It exposes one virtual port through a Listener or a loopback backend.
 package service
 
 import (
@@ -25,12 +25,12 @@ import (
 
 type Options struct {
 	Port          uint16
-	Target        string
+	Target        string // Numeric loopback backend for New; must be empty for Listen.
 	Logger        *slog.Logger
 	MaxRendezvous int
-	MaxStreams    int
+	MaxStreams    int // Total pending and active streams; default 32, maximum 256.
 	BuildTimeout  time.Duration
-	IdleTimeout   time.Duration
+	IdleTimeout   time.Duration // Forwarding only; Listener connections use application deadlines.
 	MaxLifetime   time.Duration
 }
 type snapshotSource interface {
@@ -45,15 +45,29 @@ type Host struct {
 	selectIntro       func(*directory.Snapshot, []directory.Fingerprint) (directory.Relay, error)
 	sessions, streams chan struct{}
 	runMu             sync.Mutex
+	listener          *Listener
 }
 
 func New(manager *directory.Manager, guards *directory.GuardStore, identity *directory.ServiceIdentity, options Options) (*Host, error) {
+	return newHost(manager, guards, identity, options, false)
+}
+
+func newHost(manager *directory.Manager, guards *directory.GuardStore, identity *directory.ServiceIdentity, options Options, listen bool) (*Host, error) {
 	if manager == nil || guards == nil || identity == nil {
 		return nil, errors.New("service requires directory, guards and identity")
 	}
-	target, err := netip.ParseAddrPort(options.Target)
-	if err != nil || !target.Addr().IsLoopback() || target.Addr().Zone() != "" || target.Port() == 0 || options.Port == 0 {
-		return nil, errors.New("service requires a virtual port and numeric loopback target IP:port")
+	if options.Port == 0 {
+		return nil, errors.New("service requires a nonzero virtual port")
+	}
+	if listen {
+		if options.Target != "" {
+			return nil, errors.New("service listener does not use a target")
+		}
+	} else {
+		target, err := netip.ParseAddrPort(options.Target)
+		if err != nil || !target.Addr().IsLoopback() || target.Addr().Zone() != "" || target.Port() == 0 {
+			return nil, errors.New("service requires a numeric loopback target IP:port")
+		}
 	}
 	if options.MaxRendezvous == 0 {
 		options.MaxRendezvous = 16
@@ -99,6 +113,8 @@ type generation struct {
 	received int
 }
 type persistentError struct{ error }
+
+func (e *persistentError) Unwrap() error { return e.error }
 
 var errRotate = errors.New("rotating service introduction keys")
 
@@ -363,7 +379,15 @@ func (h *Host) rendezvous(parent context.Context, r onion.ServiceRequest) {
 		select {
 		case h.streams <- struct{}{}:
 			streams.Add(1)
-			go func() { defer streams.Done(); defer func() { <-h.streams }(); h.forward(ctx, request) }()
+			go func() {
+				defer streams.Done()
+				defer func() { <-h.streams }()
+				if h.listener != nil {
+					h.listener.serve(ctx, request)
+				} else {
+					h.forward(ctx, request)
+				}
+			}()
 		default:
 			_ = request.Close()
 		}

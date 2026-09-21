@@ -74,8 +74,9 @@ func (c *Circuit) JoinService(ctx context.Context, cookie [20]byte, reply [64]by
 }
 
 // IncomingStream is a pending request for the single configured virtual port.
-// Call Accept only after connecting to the configured local backend, or Close
-// to reject it. No client-supplied hostname is ever resolved or dialed.
+// Call Accept when admitting the stream to a listener or after connecting to the
+// configured local backend; call Close to reject it. No client-supplied hostname
+// is ever resolved or dialed.
 type IncomingStream struct{ stream *streamConn }
 
 func (s *IncomingStream) Close() error { return s.stream.Close() }

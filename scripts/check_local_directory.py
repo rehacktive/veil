@@ -273,7 +273,7 @@ def main():
                                     logs.append((client_log, client_log_path))
                                     processes.append(subprocess.Popen([tor, "--defaults-torrc", "/dev/null", "-f", str(service_client_config)], stdout=client_log, stderr=subprocess.STDOUT))
                                     environment.update(VEIL_TEST_HOST_CONFIG=str(bootstrap_config), VEIL_TEST_HOST_STATE=str(root / "client-state"), VEIL_TEST_HOST_SOCKS=f"127.0.0.1:{service_socks}")
-                                    subprocess.run([circuit_test, "-test.run", "^TestLocalTorHosting$", "-test.v", "-test.timeout", "4m"], env=environment, check=True, timeout=245)
+                                    subprocess.run([circuit_test, "-test.run", "^TestLocalTorHosting$", "-test.v", "-test.timeout", "7m"], env=environment, check=True, timeout=425)
                                     return
                                 if args.proxy_demo:
                                     proxy_demo(circuit_test, environment, processes, args.proxy_check)

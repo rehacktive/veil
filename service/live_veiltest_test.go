@@ -14,6 +14,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -23,6 +24,12 @@ import (
 )
 
 func TestLocalTorHosting(t *testing.T) {
+	for _, mode := range []string{"forward", "listener"} {
+		t.Run(mode, func(t *testing.T) { testLocalTorHosting(t, mode == "listener") })
+	}
+}
+
+func testLocalTorHosting(t *testing.T, listen bool) {
 	config := os.Getenv("VEIL_TEST_HOST_CONFIG")
 	if config == "" {
 		t.Skip("requires private hosting harness")
@@ -86,7 +93,18 @@ func TestLocalTorHosting(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	identity, err := directory.OpenServiceIdentity(state)
+	// Distinct identities prevent the C Tor client reusing a cached descriptor
+	// from the other mode after its introduction circuits have been closed.
+	identityState := filepath.Join(state, "forward-identity")
+	if listen {
+		identityState = filepath.Join(state, "listener-identity")
+	}
+	identityLock, err := directory.LockState(identityState)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer identityLock.Close()
+	identity, err := directory.OpenServiceIdentity(identityState)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -95,15 +113,20 @@ func TestLocalTorHosting(t *testing.T) {
 		t.Fatal(err)
 	}
 	payload := bytes.Repeat([]byte("Veil onion hosting works!\n"), 90000)
-	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/large" {
 			_, _ = w.Write(payload)
 		} else {
 			_, _ = io.WriteString(w, "Veil onion hosting works!\n")
 		}
-	}))
-	defer backend.Close()
-	h, err := New(manager, guards, identity, Options{Port: 80, Target: strings.TrimPrefix(backend.URL, "http://"), Logger: slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelDebug}))})
+	})
+	options := Options{Port: 80, Logger: slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelDebug}))}
+	if !listen {
+		backend := httptest.NewServer(handler)
+		defer backend.Close()
+		options.Target = strings.TrimPrefix(backend.URL, "http://")
+	}
+	h, err := newHost(manager, guards, identity, options, listen)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -153,7 +176,14 @@ func TestLocalTorHosting(t *testing.T) {
 		}
 	}
 	done := make(chan error, 1)
-	go func() { done <- h.Run(ctx) }()
+	if listen {
+		listener := startListener(ctx, h, onionAddr(name+":80"))
+		server := &http.Server{Handler: handler, ReadHeaderTimeout: 10 * time.Second}
+		go func() { done <- server.Serve(listener) }()
+		defer func() { server.Close(); cancel(); <-listener.Done() }()
+	} else {
+		go func() { done <- h.Run(ctx) }()
+	}
 	defer func() {
 		cancel()
 		select {
