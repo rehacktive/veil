@@ -1,5 +1,5 @@
 /bin/
 /coverage.out
 __pycache__/
-
+/state-service/
 /state-public/
