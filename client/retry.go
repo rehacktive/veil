@@ -93,6 +93,9 @@ func retryableBuild(err error) bool {
 	if wrapped, ok := err.(interface{ Unwrap() error }); ok {
 		return retryableBuild(wrapped.Unwrap())
 	}
+	if intro, ok := err.(*circuit.IntroductionError); ok {
+		return intro.Status == 1 // UNKNOWN_ID: try another advertised introduction.
+	}
 	if remote, ok := err.(*circuit.RemoteError); ok {
 		switch remote.Reason {
 		case 4, 5, 6, 8, 9, 10, 11: // HIBERNATING, RESOURCELIMIT, CONNECTFAILED, CHANNEL_CLOSED, FINISHED, TIMEOUT, DESTROYED.

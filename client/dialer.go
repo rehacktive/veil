@@ -36,17 +36,18 @@ type buildFunc func(context.Context, *directory.Snapshot, circuit.Options) (stre
 var ErrOnionOnly = errors.New("onion-only mode requires a valid v3 onion destination")
 
 type Options struct {
-	Logger             *slog.Logger  // Optional debug logger; nil is silent. May reveal destinations and relay metadata.
-	OnionOnly          bool          // Reject every application destination except a valid v3 onion address.
-	MaxPooledCircuits  int           // Pool bound including active/building/idle entries; default 16, max 256.
-	CircuitMaxAge      time.Duration // Stop attaching streams after this age; default 10 minutes. Active streams drain.
-	CircuitIdleTimeout time.Duration // Close unused pooled circuits; default 2 minutes.
-	DisableReuse       bool          // Retain dedicated circuits even with explicit isolation tokens.
-	BuildTimeout       time.Duration // Per build attempt; default 20 seconds.
-	ConnectTimeout     time.Duration // Total queue/build/backoff/stream budget; default 1 minute.
-	OnionTimeout       time.Duration // Total onion descriptor/introduction/rendezvous budget; default 3 minutes.
-	BuildAttempts      int           // Default 3, maximum 5. Stream opens are never retried.
-	MaxCircuits        int           // Stream/build slots, default 16, max 256; also bounds separately retained introduction circuits.
+	Logger              *slog.Logger  // Optional debug logger; nil is silent. May reveal destinations and relay metadata.
+	OnionOnly           bool          // Reject every application destination except a valid v3 onion address.
+	MaxPooledCircuits   int           // Pool bound including active/building/idle entries; default 16, max 256.
+	CircuitMaxAge       time.Duration // Stop attaching streams after this age; default 10 minutes. Active streams drain.
+	CircuitIdleTimeout  time.Duration // Close unused pooled circuits; default 2 minutes.
+	DisableReuse        bool          // Retain dedicated circuits even with explicit isolation tokens.
+	BuildTimeout        time.Duration // Per build attempt; default 20 seconds.
+	ConnectTimeout      time.Duration // Total queue/build/backoff/stream budget; default 1 minute.
+	IntroductionTimeout time.Duration // Per introduction/rendezvous attempt; default 45 seconds.
+	OnionTimeout        time.Duration // Total onion descriptor/introduction/rendezvous budget; default 3 minutes.
+	BuildAttempts       int           // Default 3, maximum 5. Stream opens are never retried.
+	MaxCircuits         int           // Stream/build slots, default 16, max 256; also bounds separately retained introduction circuits.
 }
 
 type Dialer struct {
@@ -94,6 +95,9 @@ func newDialer(ctx context.Context, source snapshotSource, options Options, buil
 	if options.ConnectTimeout == 0 {
 		options.ConnectTimeout = time.Minute
 	}
+	if options.IntroductionTimeout == 0 {
+		options.IntroductionTimeout = 45 * time.Second
+	}
 	if options.OnionTimeout == 0 {
 		options.OnionTimeout = 3 * time.Minute
 	}
@@ -116,7 +120,7 @@ func newDialer(ctx context.Context, source snapshotSource, options Options, buil
 		return nil, errors.New("invalid circuit pool limits")
 	}
 
-	if options.BuildTimeout < 0 || options.ConnectTimeout < 0 || options.OnionTimeout < 0 || options.BuildAttempts < 1 || options.BuildAttempts > 5 || options.MaxCircuits < 1 || options.MaxCircuits > 256 {
+	if options.BuildTimeout < 0 || options.ConnectTimeout < 0 || options.OnionTimeout < 0 || options.IntroductionTimeout < 0 || options.BuildAttempts < 1 || options.BuildAttempts > 5 || options.MaxCircuits < 1 || options.MaxCircuits > 256 {
 		return nil, errors.New("invalid client resource limits")
 	}
 	life, cancel := context.WithCancel(ctx)

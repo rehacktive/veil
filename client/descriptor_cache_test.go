@@ -171,3 +171,71 @@ func TestDescriptorCacheCloseDuringFetch(t *testing.T) {
 		t.Fatal("closed cache repopulated")
 	}
 }
+
+func TestDescriptorInvalidationPreservesRevisionFloorAndNewerRefresh(t *testing.T) {
+	c := newDescriptorCache()
+	key := descriptorKey{scope: [32]byte{1}}
+	end := time.Now().Add(time.Hour)
+	revision := uint64(10)
+	digest := [32]byte{10}
+	calls := 0
+	fetch := func(context.Context) (*onion.Descriptor, [32]byte, error) {
+		calls++
+		return &onion.Descriptor{Revision: revision, Expires: end}, digest, nil
+	}
+	if _, err := c.load(context.Background(), key, end, fetch); err != nil {
+		t.Fatal(err)
+	}
+	c.invalidate(key, 10)
+	revision = 9
+	if _, err := c.load(context.Background(), key, end, fetch); !errors.Is(err, errDescriptorRollback) {
+		t.Fatal("invalidation lost revision floor", err)
+	}
+	revision = 10
+	digest[0] = 11
+	if _, err := c.load(context.Background(), key, end, fetch); !errors.Is(err, errDescriptorRollback) {
+		t.Fatal("invalidation lost digest floor", err)
+	}
+	revision = 11
+	if _, err := c.load(context.Background(), key, end, fetch); err != nil {
+		t.Fatal(err)
+	}
+	before := calls
+	c.invalidate(key, 10)
+	if _, err := c.load(context.Background(), key, end, fetch); err != nil || calls != before {
+		t.Fatal("older failure invalidated newer descriptor", err)
+	}
+	c.invalidate(key, 11)
+	if _, err := c.load(context.Background(), key, end, fetch); err != nil || calls != before+1 {
+		t.Fatal("failed descriptor was reused", err)
+	}
+}
+
+func TestDescriptorRefreshCanSkipStaleDirectoryWithoutLoweringFloor(t *testing.T) {
+	c := newDescriptorCache()
+	key := descriptorKey{scope: [32]byte{1}}
+	end := time.Now().Add(time.Hour)
+	digest := [32]byte{10}
+	_, err := c.load(context.Background(), key, end, func(context.Context) (*onion.Descriptor, [32]byte, error) {
+		return &onion.Descriptor{Revision: 10, Expires: end}, digest, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.invalidate(key, 10)
+	for _, v := range []struct {
+		revision uint64
+		digest   [32]byte
+		rejected bool
+	}{
+		{9, digest, true}, {10, [32]byte{11}, true}, {10, digest, false}, {11, [32]byte{11}, false},
+	} {
+		err := c.checkRevision(key, v.revision, v.digest)
+		if errors.Is(err, errDescriptorRollback) != v.rejected {
+			t.Fatal(v, err)
+		}
+	}
+	if c.records[key].revision != 10 || c.records[key].digest != digest {
+		t.Fatal("preflight changed revision floor")
+	}
+}

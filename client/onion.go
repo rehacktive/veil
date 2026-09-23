@@ -56,6 +56,10 @@ func (d *Dialer) buildOnion(life, setup context.Context, guards *directory.Guard
 	if err != nil {
 		return nil, err
 	}
+	fetched := make(map[directory.Fingerprint]bool)
+	exhausted := make(map[uint64]bool)
+	scope, shared := isolation.Scope(setup)
+	descriptorID := descriptorKey{scope: scope, blinded: blinded}
 	fetch := func(requestContext context.Context) (*onion.Descriptor, [32]byte, error) {
 		setup := requestContext
 		dirs, err := snapshot.OnionDirectories(blinded, time.Now())
@@ -68,6 +72,9 @@ func (d *Dialer) buildOnion(life, setup context.Context, guards *directory.Guard
 		var last error
 		// Bound attempts even if a future consensus expands the directory spread.
 		for _, target := range dirs[:min(len(dirs), 8)] {
+			if fetched[target.Identity()] {
+				continue
+			}
 			if err := setup.Err(); err != nil {
 				return nil, [32]byte{}, err
 			}
@@ -89,61 +96,88 @@ func (d *Dialer) buildOnion(life, setup context.Context, guards *directory.Guard
 			if e != nil {
 				return nil, [32]byte{}, fmt.Errorf("onion descriptor verification: %w", e)
 			} // Authentication/decryption failure is terminal.
+			if shared {
+				if e := d.descriptors.checkRevision(descriptorID, descriptor.Revision, digest); e != nil {
+					last = e
+					diagnostics.Log(setup, d.options.Logger, "onion_descriptor_stale", "error", e)
+					continue
+				}
+			}
+			if exhausted[descriptor.Revision] {
+				last = errors.New("onion directory still advertises failed introduction points")
+				continue
+			}
+			fetched[target.Identity()] = true
 			return descriptor, digest, nil
 		}
 		return nil, [32]byte{}, fmt.Errorf("onion descriptor unavailable: %w", last)
 	}
-	var descriptor *onion.Descriptor
-	if scope, shared := isolation.Scope(setup); shared {
-		// Period boundaries are anchored at the Unix epoch plus 12 voting intervals.
-		if minutes < 30 || minutes > 14400 {
-			return nil, directory.ErrTime
-		}
-		info := snapshot.Info()
-		length := time.Duration(minutes) * time.Minute
-		offset := 12 * info.FreshUntil.Sub(info.ValidAfter)
-		elapsed := time.Duration((info.ValidAfter.Unix()-int64(offset/time.Second))%int64(length/time.Second)) * time.Second
-		periodEnd := info.ValidAfter.Add(length - elapsed)
-		descriptor, err = d.descriptors.load(setup, descriptorKey{scope: scope, blinded: blinded}, periodEnd, fetch)
-	} else {
-		descriptor, _, err = fetch(setup)
-	}
-	if err != nil {
-		return nil, err
-	}
-	diagnostics.Log(setup, d.options.Logger, "onion_descriptor_ready", "introduction_points", len(descriptor.Introductions))
 	var last error
-	if err := shuffle(descriptor.Introductions); err != nil {
-		return nil, err
-	}
-	for _, intro := range descriptor.Introductions[:min(len(descriptor.Introductions), 3)] {
-		if err := setup.Err(); err != nil {
-			return nil, err
+	// Bound descriptor generations as well as the total OnionTimeout.
+	for refresh := 0; refresh < 3; refresh++ {
+		var descriptor *onion.Descriptor
+		if shared {
+			// Period boundaries are anchored at the Unix epoch plus 12 voting intervals.
+			if minutes < 30 || minutes > 14400 {
+				return nil, directory.ErrTime
+			}
+			info := snapshot.Info()
+			length := time.Duration(minutes) * time.Minute
+			offset := 12 * info.FreshUntil.Sub(info.ValidAfter)
+			elapsed := time.Duration((info.ValidAfter.Unix()-int64(offset/time.Second))%int64(length/time.Second)) * time.Second
+			periodEnd := info.ValidAfter.Add(length - elapsed)
+			descriptor, err = d.descriptors.load(setup, descriptorID, periodEnd, fetch)
+		} else {
+			descriptor, _, err = fetch(setup)
 		}
-		if !time.Now().Before(descriptor.Expires) {
-			return nil, onion.ErrDescriptor
-		}
-		snapshot, err = d.source.Snapshot()
 		if err != nil {
 			return nil, err
 		}
-		// Never use stale descriptor keys to impersonate a relay. Intro points
-		// absent from our verified consensus are not currently supported.
-		target, e := introductionRelay(snapshot, intro)
-		if e != nil {
+		diagnostics.Log(setup, d.options.Logger, "onion_descriptor_ready", "introduction_points", len(descriptor.Introductions))
+		if err := shuffle(descriptor.Introductions); err != nil {
+			return nil, err
+		}
+		for _, intro := range descriptor.Introductions[:min(len(descriptor.Introductions), 3)] {
+			if err := setup.Err(); err != nil {
+				return nil, err
+			}
+			if !time.Now().Before(descriptor.Expires) {
+				return nil, onion.ErrDescriptor
+			}
+			current, err := d.source.Snapshot()
+			if err != nil {
+				return nil, err
+			}
+			// Never use stale descriptor keys to impersonate a relay. Intro points
+			// absent from our verified consensus are not currently supported.
+			target, e := introductionRelay(current, intro)
+			if e != nil {
+				last = e
+				continue
+			}
+			diagnostics.Log(setup, d.options.Logger, "onion_introduction", "relay", target.Address().String())
+			c, e := onionAttempt(life, setup, d.options.IntroductionTimeout, func(attemptLife, attemptSetup context.Context) (streamCircuit, error) {
+				return d.connectOnion(attemptLife, attemptSetup, current, guards, target, intro, sub, host, port, d.options.BuildTimeout)
+			})
+			if e == nil {
+				diagnostics.Log(setup, d.options.Logger, "onion_rendezvous_ready", "exit", "none")
+				return c, nil
+			}
 			last = e
-			continue
+			diagnostics.Log(setup, d.options.Logger, "onion_introduction_failed", "error", e)
+			if !retryableBuild(e) {
+				return nil, e
+			}
 		}
-		diagnostics.Log(setup, d.options.Logger, "onion_introduction", "relay", target.Address().String())
-		c, e := d.connectOnion(life, setup, snapshot, guards, target, intro, sub, host, port, d.options.BuildTimeout)
-		if e == nil {
-			diagnostics.Log(setup, d.options.Logger, "onion_rendezvous_ready", "exit", "none")
-			return c, nil
+		exhausted[descriptor.Revision] = true
+		if shared {
+			d.descriptors.invalidate(descriptorID, descriptor.Revision)
 		}
-		last = e
-		diagnostics.Log(setup, d.options.Logger, "onion_introduction_failed", "error", e)
-		if !retryableBuild(e) {
-			return nil, e
+		if setup.Err() != nil {
+			return nil, setup.Err()
+		}
+		if refresh < 2 {
+			diagnostics.Log(setup, d.options.Logger, "onion_descriptor_refresh")
 		}
 	}
 	return nil, fmt.Errorf("onion introduction unavailable: %w", last)
@@ -314,4 +348,56 @@ func (d *Dialer) connectOnion(life, setup context.Context, s *directory.Snapshot
 	}
 	keep = true
 	return &attemptCircuit{streamCircuit: rend, cancel: cancel}, nil
+}
+
+// Bound an individual setup without tying an established stream to its deadline.
+// Retained introduction circuits remain owned by d.lifetime in connectOnion.
+func onionAttempt(life, setup context.Context, timeout time.Duration, connect func(context.Context, context.Context) (streamCircuit, error)) (streamCircuit, error) {
+	attemptSetup, stopSetup := context.WithTimeout(setup, timeout)
+	defer stopSetup()
+	attemptLife, cancel := context.WithCancel(life)
+	detach := context.AfterFunc(attemptSetup, cancel)
+	c, err := connect(attemptLife, attemptSetup)
+	// Circuit builds watch their lifetime and may report Canceled when our
+	// local setup deadline fires. Preserve that deadline as a retryable timeout.
+	if attemptSetup.Err() == context.DeadlineExceeded && canceledOnionAttempt(err) {
+		err = fmt.Errorf("onion attempt timed out: %w", context.DeadlineExceeded)
+	}
+	detached := detach()
+	if err == nil && (!detached || attemptSetup.Err() != nil || attemptLife.Err() != nil) {
+		err = attemptSetup.Err()
+		if err == nil {
+			err = attemptLife.Err()
+		}
+		if err == nil {
+			err = context.Canceled
+		}
+	}
+	if err != nil {
+		cancel()
+		if c != nil {
+			err = errors.Join(err, c.Close())
+		}
+		return nil, err
+	}
+	return &attemptCircuit{streamCircuit: c, cancel: cancel}, nil
+}
+
+func canceledOnionAttempt(err error) bool {
+	if joined, ok := err.(interface{ Unwrap() []error }); ok {
+		children := joined.Unwrap()
+		if len(children) == 0 {
+			return false
+		}
+		for _, child := range children {
+			if !canceledOnionAttempt(child) {
+				return false
+			}
+		}
+		return true
+	}
+	if wrapped, ok := err.(interface{ Unwrap() error }); ok {
+		return canceledOnionAttempt(wrapped.Unwrap())
+	}
+	return err == context.Canceled || retryableBuild(err)
 }

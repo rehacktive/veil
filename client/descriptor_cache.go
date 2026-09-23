@@ -143,3 +143,25 @@ func (c *descriptorCache) load(ctx context.Context, key descriptorKey, periodEnd
 		return out, nil
 	}
 }
+
+// Discard only the failed plaintext. Keep the revision/digest floor and its
+// original expiry, and do not invalidate a newer concurrent refresh.
+func (c *descriptorCache) invalidate(key descriptorKey, revision uint64) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if r := c.records[key]; r != nil && r.verified && r.revision == revision {
+		r.descriptor = nil
+	}
+}
+
+// A fetch may encounter an HSDir which has not received the latest revision.
+// Reject it before caching, so the caller can query another directory. load
+// repeats this check under its lock before committing concurrent fetch results.
+func (c *descriptorCache) checkRevision(key descriptorKey, revision uint64, digest [32]byte) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if r := c.records[key]; r != nil && r.verified && (revision < r.revision || revision == r.revision && digest != r.digest) {
+		return errDescriptorRollback
+	}
+	return nil
+}

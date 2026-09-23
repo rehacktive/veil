@@ -3,7 +3,6 @@ package circuit
 import (
 	"context"
 	"encoding/binary"
-	"errors"
 	"fmt"
 	"net"
 	"strings"
@@ -229,7 +228,7 @@ func (c *Circuit) Introduce(ctx context.Context, payload []byte) error {
 		return ErrProtocol
 	}
 	if binary.BigEndian.Uint16(m.Data[:2]) != 0 {
-		return errors.New("onion introduction was rejected")
+		return &IntroductionError{Status: binary.BigEndian.Uint16(m.Data[:2])}
 	}
 	return nil
 }
@@ -258,4 +257,12 @@ func (c *Circuit) DialDirectory(ctx context.Context) (net.Conn, error) {
 		return nil, ErrProtocol
 	}
 	return c.dialStream(ctx, "onion-directory", nil, cell.RelayBeginDir)
+}
+
+// IntroductionError is a valid INTRODUCE_ACK refusal, not a handshake
+// authentication failure. Status 1 means this relay no longer knows the key.
+type IntroductionError struct{ Status uint16 }
+
+func (e *IntroductionError) Error() string {
+	return fmt.Sprintf("onion introduction was rejected (status %d)", e.Status)
 }
