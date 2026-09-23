@@ -3,6 +3,7 @@ package directory
 import (
 	"bufio"
 	"bytes"
+	"compress/zlib"
 	"context"
 	"errors"
 	"fmt"
@@ -96,7 +97,7 @@ func fetchCircuit(ctx context.Context, ch cellChannel, id uint32, s TorSource, p
 	if m.Command != cell.RelayConnected || m.StreamID != 1 || len(m.Data) != 0 {
 		return nil, errors.New("directory stream: expected empty CONNECTED")
 	}
-	requestBytes := []byte("GET " + path + " HTTP/1.0\r\nHost: " + s.Target.Address.String() + "\r\nAccept-Encoding: identity\r\nConnection: close\r\n\r\n")
+	requestBytes := []byte("GET " + path + " HTTP/1.0\r\nHost: " + s.Target.Address.String() + "\r\nAccept-Encoding: deflate, identity\r\nConnection: close\r\n\r\n")
 	for len(requestBytes) > 0 {
 		n := min(len(requestBytes), cell.RelayDataSize)
 		if err := stream.send(cell.RelayMessage{Command: cell.RelayData, StreamID: 1, Data: requestBytes[:n]}); err != nil {
@@ -249,8 +250,9 @@ func (s *directoryStream) Read(p []byte) (int, error) {
 	return 0, errors.New("directory stream: excess empty DATA")
 }
 func readResponse(stream io.Reader, limit int) ([]byte, error) {
-	// Bound both framing and decompressed payload; compression is deliberately
-	// not requested/supported yet. The body reader also checks Content-Length.
+	// Bound framing, wire bytes, and decompressed payload independently. Tor's
+	// directory protocol requires deflate support and permits concatenated zlib
+	// streams when a response contains multiple documents.
 	br := bufio.NewReader(io.LimitReader(stream, int64(limit)+65536))
 	var header []byte
 	for {
@@ -274,13 +276,26 @@ func readResponse(stream io.Reader, limit int) ([]byte, error) {
 	if response.StatusCode != 200 {
 		return nil, fmt.Errorf("directory HTTP status %d", response.StatusCode)
 	}
-	if encoding := response.Header.Get("Content-Encoding"); encoding != "" && encoding != "identity" {
-		return nil, errors.New("compressed directory response is not supported")
+	encoding := strings.ToLower(strings.TrimSpace(response.Header.Get("Content-Encoding")))
+	if encoding == "" {
+		encoding = "identity"
 	}
-	if response.ContentLength > int64(limit) {
+	if encoding != "identity" && encoding != "deflate" {
+		return nil, errors.New("unsupported directory response encoding")
+	}
+	wireLimit := int64(limit)
+	if encoding == "deflate" {
+		wireLimit += 32768
+	}
+	if response.ContentLength > wireLimit {
 		return nil, errors.New("directory response exceeds size limit")
 	}
-	b, err := io.ReadAll(io.LimitReader(response.Body, int64(limit)+1))
+	var b []byte
+	if encoding == "deflate" {
+		b, err = readDeflate(response.Body, limit)
+	} else {
+		b, err = io.ReadAll(io.LimitReader(response.Body, int64(limit)+1))
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -288,6 +303,44 @@ func readResponse(stream io.Reader, limit int) ([]byte, error) {
 		return nil, errors.New("directory response exceeds size limit")
 	}
 	return b, nil
+}
+
+func readDeflate(body io.Reader, limit int) ([]byte, error) {
+	br := bufio.NewReader(body) // ByteReader prevents zlib from consuming the next stream.
+	result := make([]byte, 0, min(limit, 64<<10))
+	streams := 0
+	for {
+		if _, err := br.Peek(1); err != nil {
+			if errors.Is(err, io.EOF) && streams > 0 {
+				return result, nil
+			}
+			if errors.Is(err, io.EOF) {
+				return nil, errors.New("empty deflate directory response")
+			}
+			return nil, err
+		}
+		if streams >= 1024 {
+			return nil, errors.New("directory response has too many deflate streams")
+		}
+		zr, err := zlib.NewReader(br)
+		if err != nil {
+			return nil, fmt.Errorf("directory deflate stream: %w", err)
+		}
+		remaining := limit - len(result)
+		part, readErr := io.ReadAll(io.LimitReader(zr, int64(remaining)+1))
+		closeErr := zr.Close()
+		result = append(result, part...)
+		if len(result) > limit {
+			return nil, errors.New("directory response exceeds size limit")
+		}
+		if readErr != nil {
+			return nil, fmt.Errorf("directory deflate stream: %w", readErr)
+		}
+		if closeErr != nil {
+			return nil, fmt.Errorf("directory deflate stream: %w", closeErr)
+		}
+		streams++
+	}
 }
 
 func directoryKeys(ctx context.Context, ch cellChannel, id uint32, s TorSource) (ntor.KeyMaterial, error) {

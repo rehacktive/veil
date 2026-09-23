@@ -400,6 +400,10 @@ func TestManagerRetriesRetainsSnapshotAndReusesDescriptors(t *testing.T) {
 	if _, err := m.Refresh(context.Background()); err != nil {
 		t.Fatal(err)
 	}
+	progress := m.BootstrapProgress()
+	if !progress.Ready || !progress.Determinate || progress.Percent != 100 || progress.Total == 0 || progress.Completed != progress.Total || progress.Phase != "ready" {
+		t.Fatal("incorrect completed bootstrap progress", progress)
+	}
 	if attempts != 3 || closed != 3 || calls != 5 {
 		t.Fatalf("attempts %d closed %d calls %d", attempts, closed, calls)
 	}
@@ -422,6 +426,27 @@ func TestManagerRetriesRetainsSnapshotAndReusesDescriptors(t *testing.T) {
 	clock.advance(time.Hour)
 	if _, err := m.Snapshot(); !errors.Is(err, ErrTime) {
 		t.Fatal("expired snapshot exposed", err)
+	}
+}
+
+func TestBootstrapProgressPhases(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		status ManagerStatus
+		want   BootstrapProgress
+	}{
+		{"starting", ManagerStatus{}, BootstrapProgress{Phase: "starting"}},
+		{"certificates", ManagerStatus{Phase: "certificates"}, BootstrapProgress{Phase: "certificates"}},
+		{"descriptors", ManagerStatus{Phase: "microdescriptors", Microdescriptors: 25, MicrodescriptorsTotal: 100}, BootstrapProgress{Phase: "microdescriptors", Completed: 25, Total: 100, Percent: 25, Determinate: true}},
+		{"verification", ManagerStatus{Phase: "verification", Microdescriptors: 100, MicrodescriptorsTotal: 100}, BootstrapProgress{Phase: "verification", Completed: 100, Total: 100, Percent: 100, Determinate: true}},
+		{"retry", ManagerStatus{Phase: "retry", Microdescriptors: 50, MicrodescriptorsTotal: 100}, BootstrapProgress{Phase: "retry", Completed: 50, Total: 100, Percent: 50, Determinate: true}},
+		{"ready", ManagerStatus{Phase: "cache", Live: true, Microdescriptors: 100, MicrodescriptorsTotal: 100}, BootstrapProgress{Phase: "ready", Completed: 100, Total: 100, Percent: 100, Determinate: true, Ready: true}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if got := test.status.BootstrapProgress(); got != test.want {
+				t.Fatalf("got %+v want %+v", got, test.want)
+			}
+		})
 	}
 }
 

@@ -39,7 +39,7 @@ func TestBuildRetryClassification(t *testing.T) {
 		}
 	}
 	for reason := byte(0); reason < 16; reason++ {
-		want := reason == 4 || reason == 5 || reason == 6 || reason == 8 || reason == 9 || reason == 10
+		want := reason == 4 || reason == 5 || reason == 6 || reason == 8 || reason == 9 || reason == 10 || reason == 11
 		if retryableBuild(&circuit.RemoteError{Hop: 0, Reason: reason}) != want {
 			t.Fatal(reason)
 		}

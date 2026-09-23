@@ -18,14 +18,48 @@ type ManagerOptions struct {
 	RetryBase, RetryCap time.Duration // Defaults 1 second and 5 minutes.
 }
 type ManagerStatus struct {
-	Phase            string    `json:"phase,omitempty"`
-	DownloadRequests int       `json:"download_requests,omitempty"`
-	DownloadBytes    int64     `json:"download_bytes,omitempty"`
-	Directory        Info      `json:"directory"`
-	Live             bool      `json:"live"`
-	NextAttempt      time.Time `json:"next_attempt"`
-	Failures         int       `json:"failures"`
-	LastError        string    `json:"last_error,omitempty"`
+	Phase                 string    `json:"phase,omitempty"`
+	DownloadRequests      int       `json:"download_requests,omitempty"`
+	DownloadBytes         int64     `json:"download_bytes,omitempty"`
+	Microdescriptors      int       `json:"microdescriptors,omitempty"`
+	MicrodescriptorsTotal int       `json:"microdescriptors_total,omitempty"`
+	Directory             Info      `json:"directory"`
+	Live                  bool      `json:"live"`
+	NextAttempt           time.Time `json:"next_attempt"`
+	Failures              int       `json:"failures"`
+	LastError             string    `json:"last_error,omitempty"`
+}
+
+// BootstrapProgress is a UI-safe snapshot. Progress is indeterminate while
+// fetching certificates and the consensus; once the signed consensus is
+// verified, descriptor counts provide an exact determinate download progress.
+// Ready becomes true only after the complete directory is verified and stored.
+type BootstrapProgress struct {
+	Phase       string `json:"phase"`
+	Completed   int    `json:"completed"`
+	Total       int    `json:"total"`
+	Percent     int    `json:"percent"`
+	Determinate bool   `json:"determinate"`
+	Ready       bool   `json:"ready"`
+}
+
+func (s ManagerStatus) BootstrapProgress() BootstrapProgress {
+	p := BootstrapProgress{Phase: s.Phase, Completed: s.Microdescriptors, Total: s.MicrodescriptorsTotal, Ready: s.Live}
+	if p.Ready {
+		p.Phase = "ready"
+		p.Determinate = true
+		p.Percent = 100
+		return p
+	}
+	if p.Phase == "" {
+		p.Phase = "starting"
+	}
+	if p.Total > 0 {
+		p.Determinate = true
+		p.Completed = max(0, min(p.Completed, p.Total))
+		p.Percent = p.Completed * 100 / p.Total
+	}
+	return p
 }
 
 // Manager owns the directory lifecycle. Run refreshes until canceled; Refresh
@@ -123,6 +157,12 @@ func (m *Manager) Status() ManagerStatus {
 	s.Directory = m.current.Info()
 	s.Live = m.current.Valid(m.now())
 	return s
+}
+
+// BootstrapProgress returns a lock-safe snapshot suitable for polling from a
+// client UI. Callers should treat Determinate=false as an indeterminate phase.
+func (m *Manager) BootstrapProgress() BootstrapProgress {
+	return m.Status().BootstrapProgress()
 }
 func (m *Manager) restore() error {
 	if m.restored {
@@ -234,6 +274,8 @@ func (m *Manager) Refresh(ctx context.Context) (*Snapshot, error) {
 			m.mu.Lock()
 			m.status.DownloadRequests = 0
 			m.status.DownloadBytes = 0
+			m.status.Microdescriptors = 0
+			m.status.MicrodescriptorsTotal = 0
 			m.mu.Unlock()
 			s, docs, err = bootstrap(attemptCtx, progressSource{Source: fetcher, manager: m}, m.cache.roots, m.now(), previous)
 			closeErr := closer.Close()
@@ -260,6 +302,9 @@ func (m *Manager) Refresh(ctx context.Context) (*Snapshot, error) {
 				if ctx.Err() != nil {
 					return nil, ctx.Err()
 				}
+				m.mu.Lock()
+				m.status.Phase = "cache"
+				m.mu.Unlock()
 				s, err = m.cache.Store(docs, m.now())
 				if err != nil {
 					return nil, fmt.Errorf("%w: %v", ErrState, err)
@@ -285,9 +330,11 @@ func (m *Manager) Refresh(ctx context.Context) (*Snapshot, error) {
 					m.delay = 0
 				}
 				m.mu.Lock()
+				completed := m.status.Microdescriptors
+				total := m.status.MicrodescriptorsTotal
 				m.current = s
 				m.docs = docs
-				m.status = ManagerStatus{NextAttempt: next}
+				m.status = ManagerStatus{NextAttempt: next, Microdescriptors: completed, MicrodescriptorsTotal: total}
 				m.mu.Unlock()
 				return s, nil
 			}
@@ -352,6 +399,17 @@ func (g *GuardStore) poisonedError() error { g.mu.Lock(); defer g.mu.Unlock(); r
 type progressSource struct {
 	Source
 	manager *Manager
+}
+
+func (p progressSource) descriptorProgress(total, available int) {
+	p.manager.mu.Lock()
+	p.manager.status.Phase = "microdescriptors"
+	if total > 0 && available == total {
+		p.manager.status.Phase = "verification"
+	}
+	p.manager.status.Microdescriptors = available
+	p.manager.status.MicrodescriptorsTotal = total
+	p.manager.mu.Unlock()
 }
 
 func (p progressSource) Fetch(ctx context.Context, path string, limit int) ([]byte, error) {

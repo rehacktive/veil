@@ -2,6 +2,7 @@ package directory
 
 import (
 	"bytes"
+	"compress/zlib"
 	"context"
 	"errors"
 	"io"
@@ -16,6 +17,15 @@ import (
 type fixtureSource struct {
 	d        Documents
 	requests []string
+}
+
+type progressFixtureSource struct {
+	*fixtureSource
+	progress [][2]int
+}
+
+func (s *progressFixtureSource) descriptorProgress(total, available int) {
+	s.progress = append(s.progress, [2]int{total, available})
 }
 
 func (f *fixtureSource) Fetch(ctx context.Context, path string, limit int) ([]byte, error) {
@@ -63,30 +73,79 @@ func TestBootstrapVerificationOrder(t *testing.T) {
 		t.Fatal("accepted nil source")
 	}
 }
+
+func TestBootstrapDescriptorProgress(t *testing.T) {
+	d, roots, now := fixture(t)
+	source := &progressFixtureSource{fixtureSource: &fixtureSource{d: d}}
+	if _, _, err := Bootstrap(context.Background(), source, roots, now); err != nil {
+		t.Fatal(err)
+	}
+	if len(source.progress) < 2 {
+		t.Fatal("missing descriptor progress", source.progress)
+	}
+	first := source.progress[0]
+	last := source.progress[len(source.progress)-1]
+	if first[0] == 0 || first[1] != 0 || last[0] != first[0] || last[1] != last[0] {
+		t.Fatal("incorrect descriptor progress", source.progress)
+	}
+}
 func TestHTTPResponseBounds(t *testing.T) {
+	deflate := func(parts ...string) []byte {
+		t.Helper()
+		var wire bytes.Buffer
+		wire.WriteString("HTTP/1.0 200 OK\r\nContent-Encoding: deflate\r\n\r\n")
+		for _, part := range parts {
+			zw := zlib.NewWriter(&wire)
+			if _, err := io.WriteString(zw, part); err != nil {
+				t.Fatal(err)
+			}
+			if err := zw.Close(); err != nil {
+				t.Fatal(err)
+			}
+		}
+		return wire.Bytes()
+	}
+	truncatedDeflate := deflate("abc")
+	truncatedDeflate = truncatedDeflate[:len(truncatedDeflate)-1]
 	for _, test := range []struct {
-		name, wire string
-		limit      int
-		want       string
-		bad        bool
+		name  string
+		wire  []byte
+		limit int
+		want  string
+		bad   bool
 	}{
-		{"length", "HTTP/1.0 200 OK\r\nContent-Length: 3\r\n\r\nabc", 3, "abc", false},
-		{"EOF", "HTTP/1.0 200 OK\r\n\r\nabc", 3, "abc", false},
-		{"chunked", "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n3\r\nabc\r\n0\r\n\r\n", 3, "abc", false},
-		{"redirect", "HTTP/1.0 302 Redirect\r\nLocation: http://example.com\r\n\r\n", 3, "", true},
-		{"compression", "HTTP/1.0 200 OK\r\nContent-Encoding: gzip\r\n\r\nabc", 3, "", true},
-		{"oversized length", "HTTP/1.0 200 OK\r\nContent-Length: 4\r\n\r\nabcd", 3, "", true},
-		{"oversized EOF", "HTTP/1.0 200 OK\r\n\r\nabcd", 3, "", true},
-		{"truncated", "HTTP/1.0 200 OK\r\nContent-Length: 3\r\n\r\nab", 3, "", true},
-		{"oversized header line", "HTTP/1.0 200 OK\r\nX: " + strings.Repeat("a", 40000) + "\r\n\r\n", 3, "", true},
-		{"malformed", "not http\r\n\r\n", 3, "", true},
+		{"length", []byte("HTTP/1.0 200 OK\r\nContent-Length: 3\r\n\r\nabc"), 3, "abc", false},
+		{"EOF", []byte("HTTP/1.0 200 OK\r\n\r\nabc"), 3, "abc", false},
+		{"chunked", []byte("HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n3\r\nabc\r\n0\r\n\r\n"), 3, "abc", false},
+		{"deflate", deflate("abc"), 3, "abc", false},
+		{"concatenated deflate", deflate("ab", "cd"), 4, "abcd", false},
+		{"redirect", []byte("HTTP/1.0 302 Redirect\r\nLocation: http://example.com\r\n\r\n"), 3, "", true},
+		{"unknown compression", []byte("HTTP/1.0 200 OK\r\nContent-Encoding: gzip\r\n\r\nabc"), 3, "", true},
+		{"empty deflate", []byte("HTTP/1.0 200 OK\r\nContent-Encoding: deflate\r\n\r\n"), 3, "", true},
+		{"truncated deflate", truncatedDeflate, 3, "", true},
+		{"oversized deflate", deflate("abcd"), 3, "", true},
+		{"oversized length", []byte("HTTP/1.0 200 OK\r\nContent-Length: 4\r\n\r\nabcd"), 3, "", true},
+		{"oversized EOF", []byte("HTTP/1.0 200 OK\r\n\r\nabcd"), 3, "", true},
+		{"truncated", []byte("HTTP/1.0 200 OK\r\nContent-Length: 3\r\n\r\nab"), 3, "", true},
+		{"oversized header line", []byte("HTTP/1.0 200 OK\r\nX: " + strings.Repeat("a", 40000) + "\r\n\r\n"), 3, "", true},
+		{"malformed", []byte("not http\r\n\r\n"), 3, "", true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			b, err := readResponse(strings.NewReader(test.wire), test.limit)
+			b, err := readResponse(bytes.NewReader(test.wire), test.limit)
 			if (err != nil) != test.bad || (!test.bad && string(b) != test.want) {
 				t.Fatalf("%q %v", b, err)
 			}
 		})
+	}
+	var excessive bytes.Buffer
+	for range 1025 {
+		zw := zlib.NewWriter(&excessive)
+		if err := zw.Close(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := readDeflate(bytes.NewReader(excessive.Bytes()), 1); err == nil {
+		t.Fatal("accepted excessive deflate stream count")
 	}
 	for _, path := range []string{"http://example.com", "/tor/x\r\nInjected: yes", "/tor/x?q=y", "/tor/%20", "/tor/x y"} {
 		if _, err := (TorSource{}).Fetch(context.Background(), path, 100); err == nil {

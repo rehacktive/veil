@@ -95,7 +95,7 @@ func retryableBuild(err error) bool {
 	}
 	if remote, ok := err.(*circuit.RemoteError); ok {
 		switch remote.Reason {
-		case 4, 5, 6, 8, 9, 10: // HIBERNATING, RESOURCELIMIT, CONNECTFAILED, CHANNEL_CLOSED, FINISHED, TIMEOUT.
+		case 4, 5, 6, 8, 9, 10, 11: // HIBERNATING, RESOURCELIMIT, CONNECTFAILED, CHANNEL_CLOSED, FINISHED, TIMEOUT, DESTROYED.
 			return true
 		}
 		return false

@@ -176,10 +176,13 @@ See [CREATE_FAST specification](https://spec.torproject.org/tor-spec/create-crea
 It provides no independent authentication or forward secrecy beyond the pinned
 TLS channel; it never carries application streams or extends to other hops.
 
-The complete directory budget is 64 MiB; per-document and per-download limits
-remain in force. Public mode still requires a majority of all nine bundled
-authorities and all referenced microdescriptor digests. Neither public bootstrap
-nor the browser instructions weaken verification or enable direct fallback.
+The complete directory budget is 64 MiB; per-document, compressed-wire and
+decompressed-output limits remain in force. Deflate decoding accepts the
+concatenated zlib streams required by the directory protocol without weakening
+document or digest verification. Public mode still requires a majority of all
+nine bundled authorities and all referenced microdescriptor digests. Neither
+public bootstrap nor the browser instructions weaken verification or enable
+direct fallback.
 
 The 0.8 scan passed on 2026-09-20: **34 production files, zero findings, zero
 loading errors**. The suppression-disabled audit reported exactly those 16

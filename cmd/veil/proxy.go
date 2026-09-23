@@ -191,11 +191,12 @@ func directoryProgress(ctx context.Context, m *directory.Manager, logger *slog.L
 		case <-tick.C:
 		}
 		status := m.Status()
-		if status.Phase == "" {
+		progress := status.BootstrapProgress()
+		if progress.Phase == "starting" {
 			continue
 		}
 		if status != previous {
-			diagnostics.Log(ctx, logger, "directory_progress", "phase", status.Phase, "live", status.Live, "requests", status.DownloadRequests, "bytes", status.DownloadBytes, "failed_attempts", status.Failures, "error", status.LastError)
+			diagnostics.Log(ctx, logger, "directory_progress", "phase", progress.Phase, "ready", progress.Ready, "determinate", progress.Determinate, "percent", progress.Percent, "completed", progress.Completed, "total", progress.Total, "requests", status.DownloadRequests, "bytes", status.DownloadBytes, "failed_attempts", status.Failures, "error", status.LastError)
 			previous = status
 		}
 	}

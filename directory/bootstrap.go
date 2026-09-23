@@ -26,6 +26,10 @@ type Source interface {
 	Fetch(context.Context, string, int) ([]byte, error)
 }
 
+type descriptorProgressSource interface {
+	descriptorProgress(total, available int)
+}
+
 // Bootstrap authenticates a complete directory. Certificates and consensus are
 // verified before requesting microdescriptors; all digest requests are sorted
 // and batched independently of the paths that will later be selected.
@@ -89,6 +93,9 @@ func bootstrap(ctx context.Context, source Source, roots []Fingerprint, now time
 	}
 	sort.Strings(sorted)
 	sort.Strings(missing)
+	if progress, ok := source.(descriptorProgressSource); ok {
+		progress.descriptorProgress(len(digests), len(known))
+	}
 	for start := 0; start < len(missing); start += 64 {
 		end := min(start+64, len(missing))
 		requested := map[string]bool{}
@@ -115,6 +122,9 @@ func bootstrap(ctx context.Context, source Source, roots []Fingerprint, now time
 			if known[key] == nil {
 				return nil, d, fmt.Errorf("%w: missing requested microdescriptor", ErrTrust)
 			}
+		}
+		if progress, ok := source.(descriptorProgressSource); ok {
+			progress.descriptorProgress(len(digests), len(known))
 		}
 	}
 	for _, key := range sorted {
