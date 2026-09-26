@@ -64,9 +64,10 @@ func (s ManagerStatus) BootstrapProgress() BootstrapProgress {
 
 // Manager owns the directory lifecycle. Run refreshes until canceled; Refresh
 // performs one bounded round. Snapshot rejects expired data even during outages.
-// All network requests go through the pinned bootstrap source initially, then
-// through the sampled guard set. Corrupt state or verification failure fails
-// closed. Use one manager/guard/cache owner per state directory.
+// Network requests use pinned bootstrap sources initially and after the cached
+// directory exceeds the guard recovery window; otherwise they use sampled guards.
+// Corrupt state or verification failure fails closed. Use one manager/guard/cache
+// owner per state directory.
 type Manager struct {
 	cache     *Cache
 	guards    *GuardStore
@@ -177,7 +178,13 @@ func (m *Manager) restore() error {
 		return err
 	}
 	m.guards.mu.Lock()
-	err = m.guards.update(s, m.now(), true)
+	if needsBootstrap(s, m.now()) {
+		// Old descriptors cannot locate guards safely. Keep the sample and its
+		// rollback floor intact until a fresh directory has been authenticated.
+		err = m.guards.checkConsensus(s, m.now())
+	} else {
+		err = m.guards.update(s, m.now(), true)
+	}
 	m.guards.mu.Unlock()
 	if err != nil {
 		return err
@@ -194,6 +201,11 @@ func (m *Manager) restore() error {
 	m.restored = true
 	return nil
 }
+
+func needsBootstrap(s *Snapshot, now time.Time) bool {
+	return s != nil && s.consensus != nil && !now.Before(s.consensus.validUntil.Add(directoryGuardRecoveryWindow))
+}
+
 func (m *Manager) source(attemptNumber int) (TorSource, *GuardAttempt, error) {
 	m.mu.RLock()
 	s := m.current
@@ -205,7 +217,7 @@ func (m *Manager) source(attemptNumber int) (TorSource, *GuardAttempt, error) {
 	if err != nil {
 		return TorSource{}, nil, err
 	}
-	if hasSample {
+	if hasSample && !needsBootstrap(s, m.now()) {
 		a, err := m.guards.Select(s, true, nil, m.now())
 		if err != nil {
 			return TorSource{}, nil, err

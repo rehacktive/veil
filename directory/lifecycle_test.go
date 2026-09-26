@@ -603,6 +603,177 @@ func TestManagerRecoversRecentlyExpiredDirectory(t *testing.T) {
 		t.Fatal(s.Info(), err)
 	}
 }
+
+func TestManagerRecoversLongExpiredDirectory(t *testing.T) {
+	d, roots, now, sign := signedFixture(t)
+	base := d.Consensus[:bytes.Index(d.Consensus, []byte("directory-signature "))]
+	for _, mode := range []string{"restart-refresh", "restart-run", "running"} {
+		for _, age := range []time.Duration{24*time.Hour + 30*time.Second, 6 * 24 * time.Hour} {
+			t.Run(fmt.Sprintf("%s/%s", mode, age), func(t *testing.T) {
+				m, clock := testManager(t, d, roots, now)
+				if _, err := m.Refresh(context.Background()); err != nil {
+					t.Fatal(err)
+				}
+				guardBytes, err := os.ReadFile(m.guards.path + "/guard.json")
+				if err != nil {
+					t.Fatal(err)
+				}
+				originalSample := jsonBytes(m.guards.state.Sample)
+				clock.advance(age)
+				newer := d
+				body := append([]byte(nil), base...)
+				for _, key := range []string{"valid-after", "fresh-until", "valid-until"} {
+					start := bytes.Index(body, []byte(key+" ")) + len(key) + 1
+					end := start + bytes.IndexByte(body[start:], '\n')
+					at, err := time.Parse("2006-01-02 15:04:05", string(body[start:end]))
+					if err != nil {
+						t.Fatal(err)
+					}
+					body = bytes.Replace(body, body[start:end], []byte(at.Add(age).Format("2006-01-02 15:04:05")), 1)
+				}
+				newer.Consensus = sign(body)
+				if mode != "running" {
+					m, err = NewManager(m.cache, guardStoreAt(t, m.guards.path), m.fallbacks, ManagerOptions{})
+					if err != nil {
+						t.Fatal(err)
+					}
+					m.now = clock.now
+					m.wait = clock.wait
+				}
+				calls, requests := 0, 0
+				m.factory = func(_ context.Context, source TorSource, a *GuardAttempt) (Source, io.Closer) {
+					calls++
+					if calls == 1 {
+						if a != nil || source.Target != m.fallbacks[0].Target {
+							t.Fatal("long-offline recovery must use a pinned bootstrap relay")
+						}
+						if _, err := m.Snapshot(); !errors.Is(err, ErrTime) {
+							t.Fatal("expired snapshot exposed during bootstrap", err)
+						}
+						got, err := os.ReadFile(m.guards.path + "/guard.json")
+						if err != nil || !bytes.Equal(got, guardBytes) {
+							t.Fatal("guard state changed before fresh verification", err)
+						}
+					} else if a == nil {
+						t.Fatal("refresh did not return to sampled guards")
+					}
+					f := &fixtureSource{d: newer}
+					return sourceFunc(func(ctx context.Context, path string, limit int) ([]byte, error) {
+						requests++
+						return f.Fetch(ctx, path, limit)
+					}), closerFunc(func() error { return nil })
+				}
+				if mode == "restart-run" {
+					ctx, cancel := context.WithCancel(context.Background())
+					defer cancel()
+					m.wait = func(ctx context.Context, delay time.Duration) error {
+						if calls == 0 {
+							if delay > 0 {
+								t.Fatal("delayed recovery of expired cache")
+							}
+							return nil
+						}
+						cancel()
+						return ctx.Err()
+					}
+					if err := m.Run(ctx); !errors.Is(err, context.Canceled) {
+						t.Fatal(err)
+					}
+				} else if _, err := m.Refresh(context.Background()); err != nil {
+					t.Fatal(err)
+				}
+				if calls != 1 || requests != 2 {
+					t.Fatalf("bootstrap calls=%d requests=%d; expected cached descriptor reuse", calls, requests)
+				}
+				s, err := m.Snapshot()
+				if err != nil || !s.Info().ValidAfter.Equal(now.Add(age-10*time.Second)) {
+					t.Fatal("fresh snapshot not published", err)
+				}
+				if jsonBytes(m.guards.state.Sample) != originalSample {
+					t.Fatal("guard sample replaced on recovery")
+				}
+				if _, err := m.Refresh(context.Background()); err != nil {
+					t.Fatal(err)
+				}
+			})
+		}
+	}
+}
+
+func TestManagerLongExpiredCacheFailsClosed(t *testing.T) {
+	d, roots, now := fixture(t)
+	for _, failure := range []string{"signature", "rollback", "conflict", "guard-state", "clock", "expired-download"} {
+		t.Run(failure, func(t *testing.T) {
+			m, clock := testManager(t, d, roots, now)
+			if _, err := m.Refresh(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			clock.advance(6 * 24 * time.Hour)
+			switch failure {
+			case "signature":
+				forged := d
+				forged.Consensus = bytes.Replace(d.Consensus, []byte("Bandwidth=208"), []byte("Bandwidth=209"), 1)
+				if err := writePrivate(m.cache.path, "directory.json", []byte(jsonBytes(forged))); err != nil {
+					t.Fatal(err)
+				}
+			case "rollback", "conflict":
+				if failure == "rollback" {
+					m.guards.state.ConsensusTime = now
+				} else {
+					m.guards.state.ConsensusDigest[0] ^= 1
+				}
+				if err := m.guards.save(); err != nil {
+					t.Fatal(err)
+				}
+			case "guard-state":
+				if err := writePrivate(m.guards.path, "guard.json", []byte(`{"Version":9}`)); err != nil {
+					t.Fatal(err)
+				}
+			case "clock":
+				clock.at = now.Add(-time.Hour)
+			}
+			before, err := os.ReadFile(m.cache.path + "/directory.json")
+			if err != nil {
+				t.Fatal(err)
+			}
+			guardsBefore, err := os.ReadFile(m.guards.path + "/guard.json")
+			if err != nil {
+				t.Fatal(err)
+			}
+			restarted, err := NewManager(m.cache, guardStoreAt(t, m.guards.path), m.fallbacks, ManagerOptions{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			restarted.now = clock.now
+			calls := 0
+			restarted.factory = func(context.Context, TorSource, *GuardAttempt) (Source, io.Closer) {
+				calls++
+				if failure != "expired-download" {
+					t.Fatal("invalid cache/state caused network bootstrap")
+				}
+				return &fixtureSource{d: d}, closerFunc(func() error { return nil })
+			}
+			if _, err := restarted.Refresh(context.Background()); err == nil {
+				t.Fatal("invalid recovery accepted")
+			}
+			if failure == "expired-download" && calls != 1 {
+				t.Fatal("expired network directory was retried", calls)
+			}
+			if _, err := restarted.Snapshot(); !errors.Is(err, ErrTime) {
+				t.Fatal("invalid snapshot published", err)
+			}
+			after, err := os.ReadFile(m.cache.path + "/directory.json")
+			if err != nil || !bytes.Equal(before, after) {
+				t.Fatal("failed recovery replaced cache", err)
+			}
+			guardsAfter, err := os.ReadFile(m.guards.path + "/guard.json")
+			if err != nil || !bytes.Equal(guardsBefore, guardsAfter) {
+				t.Fatal("failed recovery changed guard state", err)
+			}
+		})
+	}
+}
+
 func TestGuardPersistenceFailureStopsSelection(t *testing.T) {
 	s := manyGuards(4)
 	g := guardStore(t)

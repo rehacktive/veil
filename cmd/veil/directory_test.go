@@ -10,6 +10,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 	"veil/directory"
 )
 
@@ -55,8 +56,9 @@ func TestDirectoryBootstrapInvalidConfig(t *testing.T) {
 	}
 }
 
-func TestWatchRejectsExpiredCache(t *testing.T) {
-	// The expired fixture must be rejected before the watch loop contacts a relay.
+func TestWatchRecoversExpiredCache(t *testing.T) {
+	// An expired authenticated cache must enter recovery instead of terminating
+	// with ErrTime. The unavailable local relay keeps it waiting until canceled.
 	dir := t.TempDir()
 	os.Chmod(dir, 0700)
 	certs, err := os.ReadFile("../../directory/testdata/authorities.txt")
@@ -96,7 +98,15 @@ func TestWatchRejectsExpiredCache(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := watchDirectory(context.Background(), manager, io.Discard); !errors.Is(err, directory.ErrTime) {
+	ctx, cancel := context.WithTimeout(context.Background(), 250*time.Millisecond)
+	defer cancel()
+	if err := watchDirectory(ctx, manager, io.Discard); !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatal(err)
+	}
+	if _, err := manager.Snapshot(); !errors.Is(err, directory.ErrTime) {
+		t.Fatal("expired cache exposed during recovery", err)
+	}
+	if manager.Status().Directory.Relays == 0 {
+		t.Fatal("expired cache was not authenticated for recovery")
 	}
 }

@@ -244,6 +244,20 @@ func (g *GuardStore) reachable(id Fingerprint, directory bool, now time.Time) bo
 	return !r.connection.no && (!directory || !r.directory.no)
 }
 
+const directoryGuardRecoveryWindow = 24 * time.Hour
+
+// checkConsensus checks persisted rollback protection without changing guards.
+// The caller holds g.mu and supplies an authenticated snapshot.
+func (g *GuardStore) checkConsensus(s *Snapshot, now time.Time) error {
+	if err := g.load(now); err != nil {
+		return err
+	}
+	if s.consensus.validAfter.Before(g.state.ConsensusTime) || (s.consensus.validAfter.Equal(g.state.ConsensusTime) && g.state.ConsensusDigest != s.consensus.digest) {
+		return fmt.Errorf("%w: guard consensus rollback/conflict", ErrTrust)
+	}
+	return nil
+}
+
 // update only expires or samples guards from a live, non-rollback consensus.
 // A recently expired snapshot may locate existing guards for directory recovery
 // but must never expand the sample or authorize an application path.
@@ -252,14 +266,11 @@ func (g *GuardStore) update(s *Snapshot, now time.Time, directory bool) (err err
 		return ErrTime
 	}
 	live := s.Valid(now)
-	if !live && (!directory || now.Before(s.consensus.validAfter) || !now.Before(s.consensus.validUntil.Add(24*time.Hour))) {
+	if !live && (!directory || now.Before(s.consensus.validAfter) || !now.Before(s.consensus.validUntil.Add(directoryGuardRecoveryWindow))) {
 		return ErrTime
 	}
-	if err := g.load(now); err != nil {
+	if err := g.checkConsensus(s, now); err != nil {
 		return err
-	}
-	if s.consensus.validAfter.Before(g.state.ConsensusTime) || (s.consensus.validAfter.Equal(g.state.ConsensusTime) && g.state.ConsensusDigest != s.consensus.digest) {
-		return fmt.Errorf("%w: guard consensus rollback/conflict", ErrTrust)
 	}
 	g.params = parameters(s)
 	if !live {

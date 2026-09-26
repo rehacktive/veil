@@ -331,8 +331,8 @@ func writePrivate(dir, name string, b []byte) error {
 	return directory.Sync()
 }
 
-// restore authenticates even recently expired documents at their original
-// valid-after timestamp. Only Manager uses these for directory guard recovery;
+// restore authenticates even expired documents at their original valid-after
+// timestamp. Only Manager uses these to recover and retain rollback protection;
 // Cache.Load and Manager.Snapshot never return expired data as usable.
 func (c *Cache) restore(now time.Time) (*Snapshot, Documents, error) {
 	c.mu.Lock()
@@ -359,7 +359,7 @@ func (c *Cache) restore(now time.Time) (*Snapshot, Documents, error) {
 	if err != nil {
 		return nil, d, err
 	}
-	if now.Before(s.consensus.validAfter) || !now.Before(s.consensus.validUntil.Add(24*time.Hour)) {
+	if now.Before(s.consensus.validAfter) {
 		return nil, d, ErrTime
 	}
 	return s, d, nil

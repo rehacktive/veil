@@ -1,5 +1,28 @@
 # Veil 0.13 native onion hosting validation
 
+## Long-offline directory recovery — 2026-09-26
+
+Authenticated caches older than the 24-hour directory-guard recovery window now
+trigger a download through configured pinned bootstrap relays. Saved guards and
+rollback protection remain intact; expired snapshots never authorize application
+traffic, and refresh returns to sampled guards after a live directory is stored.
+
+Validation passed:
+
+- `go test -race -timeout 2m ./...` and `go vet ./...`.
+- Recovery at the exact 24-hour cutoff and after six days, through `Refresh`,
+  restarted `Run`, and an already-running manager; cached descriptors are reused
+  and the saved guard sample is preserved.
+- Rejection of altered signatures, rollback/conflicting guard state, corrupt
+  guard state, backward clocks, and expired downloaded consensuses, without
+  replacing the cache or guard state.
+- A public-network proxy startup using a temporary copy of the local cache that
+  expired on September 20 at 23:00 UTC reached `socks5_ready` on September 26 at
+  07:28:56 UTC. One bootstrap relay timed out; the next attempt succeeded. The
+  proxy was then stopped and the temporary state removed. No application streams
+  were opened, and the original state directory was unchanged. Android packaging
+  was not tested in this repository.
+
 ## Bounded control-cell batching — 2026-09-21
 
 The managed stream writer now groups already-queued SENDME/END controls from

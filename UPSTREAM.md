@@ -110,7 +110,7 @@ The default guard context uses a persistent sample and confirmation order, deriv
 
 Refresh timing follows the client interval after freshness ends and before validity expires. `Session` reuses a channel across sequential requests, with fresh circuits, bounded draining to END, retired-circuit filtering, and channel teardown on failure/cancellation. The manager only retries transient failures; it does not automatically recover from rejected documents or state corruption. Already verified microdescriptor bytes are reused only when their hashes appear in the new signed consensus; network responses must match the particular request's digest set.
 
-This covers the default unrestricted context, not bridges, user-specified reachability/entry filters, path-bias accounting, or general application circuit management. A recently expired cache is usable only to locate existing directory guards for 24 hours; data access still requires a live snapshot. See README.md for operational boundaries.
+This covers the default unrestricted context, not bridges, user-specified reachability/entry filters, path-bias accounting, or general application circuit management. A recently expired cache is usable only to locate existing directory guards for 24 hours; after that window, the manager uses pinned bootstrap relays to recover a fresh directory without clearing guard state. Data access still requires a live snapshot. See README.md for operational boundaries.
 
 ## Public bootstrap additions (0.8)
 

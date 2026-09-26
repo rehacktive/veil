@@ -37,10 +37,11 @@ The implementation and negative tests are present. Automated Go tests use a loca
 - [x] Implement the default guard context: sampling, confirmation, primary preference, separate directory reachability, expiry, jittered retries, and pending-circuit usability.
 - [x] Add a cancellable manager and `veil directory-watch` with randomized refresh scheduling, bounded retries, cache reuse, and per-round channel reuse.
 - [x] Test failure/cancellation, guard migration and persistence, recent-expiry recovery, scheduled live refresh, and warm restart.
-- [ ] Add long-offline recovery beyond 24 hours, restricted/bridge guard contexts, and path-bias integration with application circuits.
+- [x] Recover beyond 24 hours through pinned bootstrap relays while preserving guard state and rollback protection.
+- [ ] Add restricted/bridge guard contexts and path-bias integration with application circuits.
 - [x] Run a complete live authority-consensus-microdescriptor bootstrap against a controlled three-relay Tor network.
 
-Acceptance: reject forged and expired directories, use only verified descriptors, preserve guards across restarts, and bootstrap reproducibly in a controlled Tor network. Directory access must follow Tor's bootstrap and privacy rules. The live three-relay test proves the complete document download, verification, and cache path. The default lifecycle is implemented and tested against C Tor; the remaining contexts, long-offline recovery, and production privacy requirements are not claimed complete. Full router-descriptor format support is deferred because this implementation uses microdescriptor consensuses.
+Acceptance: reject forged and expired directories, use only verified descriptors, preserve guards across restarts, and bootstrap reproducibly in a controlled Tor network. Directory access must follow Tor's bootstrap and privacy rules. The live three-relay test proves the complete document download, verification, and cache path. The default lifecycle is implemented and tested against C Tor; the remaining contexts and production privacy requirements are not claimed complete. Full router-descriptor format support is deferred because this implementation uses microdescriptor consensuses.
 
 ## 4. Circuits and streams — fixed-window TCP streams implemented
 
