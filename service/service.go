@@ -39,6 +39,7 @@ type snapshotSource interface {
 }
 type buildFunc func(context.Context, *directory.Snapshot, *directory.Relay, circuit.OnionPurpose) (*circuit.Circuit, error)
 type Host struct {
+	status            hostStatus
 	channels          *channel.Pool
 	channelPolicy     *channel.PaddingPolicy
 	source            snapshotSource
@@ -122,11 +123,13 @@ var errRotate = errors.New("rotating service introduction keys")
 // Run owns all circuits and workers until cancellation. Circuit failures rebuild
 // introduction points with fresh keys and republish; guard state is never reset.
 // Rendezvous circuits outlive introduction generations, subject to MaxLifetime.
-func (h *Host) Run(ctx context.Context) error {
+func (h *Host) Run(ctx context.Context) (result error) {
 	if !h.runMu.TryLock() {
 		return errors.New("service is already running")
 	}
 	defer h.runMu.Unlock()
+	h.updateStatus(func(s *Status) { *s = Status{Phase: "starting", Running: true} })
+	defer func() { h.stopStatus(result) }()
 	ctx, cancel := context.WithCancel(ctx)
 	h.channels = channel.NewPool(ctx, h.channelPolicy)
 	defer func() { _ = h.channels.Close() }()
@@ -145,8 +148,10 @@ func (h *Host) Run(ctx context.Context) error {
 	}()
 	for failures := 0; ; {
 		retained = pruneGenerations(retained, time.Now())
+		h.generationStatus(nil, retained)
 		if len(retained) == maxIntroductionGenerations {
-			diagnostics.Log(ctx, h.options.Logger, "service_intro_capacity_wait")
+			h.updateStatus(func(s *Status) { s.Phase = "capacity_wait" })
+			diagnostics.Info(ctx, h.options.Logger, "service_intro_capacity_wait", "message", "Waiting for retained introduction capacity")
 			select {
 			case <-ctx.Done():
 				return ctx.Err()
@@ -155,6 +160,12 @@ func (h *Host) Run(ctx context.Context) error {
 			}
 		}
 		g := newGeneration(ctx, admission, changed)
+		h.generationStatus(g, retained)
+		h.updateStatus(func(s *Status) {
+			s.Phase = "introducing"
+			s.Publications = nil
+			s.NextAttempt = time.Time{}
+		})
 		err := h.runGeneration(ctx, g, &sessions)
 		if g.retainUntil.After(time.Now()) && g.alive.Load() > 0 {
 			g.retireTimer = h.newRetireTimer(time.Until(g.retainUntil), g.cancel)
@@ -163,6 +174,7 @@ func (h *Host) Run(ctx context.Context) error {
 		} else {
 			g.close()
 		}
+		h.generationStatus(nil, retained)
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
@@ -179,7 +191,14 @@ func (h *Host) Run(ctx context.Context) error {
 			return fmt.Errorf("service recovery exhausted: %w", err)
 		}
 		diagnostics.Log(ctx, h.options.Logger, "service_recovering", "error", err, "attempt", failures)
-		timer := time.NewTimer(min(time.Minute, time.Duration(failures)*5*time.Second))
+		delay := min(time.Minute, time.Duration(failures)*5*time.Second)
+		h.updateStatus(func(s *Status) {
+			s.Phase = "recovering"
+			s.LastError = err.Error()
+			s.NextAttempt = time.Now().Add(delay)
+		})
+		diagnostics.Info(ctx, h.options.Logger, "service_recovery_scheduled", "message", "Rebuilding onion introduction points", "attempt", failures, "retry_in", delay)
+		timer := time.NewTimer(delay)
 		select {
 		case <-ctx.Done():
 			timer.Stop()
@@ -234,6 +253,7 @@ func (h *Host) runGeneration(parent context.Context, g *generation, sessions *sy
 	if len(g.intros) != 3 {
 		return errors.New("could not establish three introduction points")
 	}
+	diagnostics.Info(ctx, h.options.Logger, "service_introductions_ready", "message", "Introduction points established; publishing descriptors", "count", len(g.intros))
 	failed := make(chan error, len(g.intros))
 	// Readers start before publishing. Subcredentials are installed by publish
 	// before a descriptor is uploaded, so prompt client introductions can succeed.
@@ -276,17 +296,24 @@ func (h *Host) runGeneration(parent context.Context, g *generation, sessions *sy
 			if errors.Is(err, errRotate) || errors.As(err, &state) {
 				return err
 			}
+			// Track attempted periods too: otherwise a failed initial round
+			// looks like a period change and bypasses its scheduled retry.
+			lastPeriods = periods
 			if err != nil {
-				diagnostics.Log(ctx, h.options.Logger, "service_publish_failed", "error", err)
 				nextPublish = time.Now().Add(time.Minute)
 			} else {
-				lastPeriods = periods
 				jitter, e := rand.Int(rand.Reader, big.NewInt(3601))
 				if e != nil {
 					return e
 				}
 				nextPublish = time.Now().Add(time.Hour + time.Duration(jitter.Int64())*time.Second)
-				diagnostics.Log(ctx, h.options.Logger, "service_ready", "port", h.options.Port, "target", h.options.Target)
+			}
+			h.publicationResult(err, nextPublish)
+			if err == nil {
+				diagnostics.Info(ctx, h.options.Logger, "service_ready", "message", "Onion service is ready: descriptor publication complete", "port", h.options.Port, "next_publish", nextPublish)
+			} else {
+				diagnostics.Log(ctx, h.options.Logger, "service_publish_failed", "error", err)
+				diagnostics.Info(ctx, h.options.Logger, "service_publication_retry", "message", "Descriptor publication incomplete; clients may already connect", "phase", h.Status().Phase, "next_attempt", nextPublish)
 			}
 		}
 		select {

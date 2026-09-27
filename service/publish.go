@@ -16,6 +16,15 @@ import (
 )
 
 func (h *Host) publish(ctx context.Context, s *directory.Snapshot, g *generation, periods []directory.ServicePeriod) error {
+	return h.publishWithClock(ctx, s, g, periods, time.Now)
+}
+
+func (h *Host) publishWithClock(ctx context.Context, s *directory.Snapshot, g *generation, periods []directory.ServicePeriod, now func() time.Time) error {
+	h.updateStatus(func(s *Status) {
+		s.Phase = "publishing"
+		s.Publications = nil
+		s.NextAttempt = time.Time{}
+	})
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Minute)
 	defer cancel()
 	var subs [][32]byte
@@ -55,7 +64,7 @@ func (h *Host) publish(ctx context.Context, s *directory.Snapshot, g *generation
 		if err != nil {
 			return &persistentError{err}
 		}
-		created := time.Now()
+		created := now()
 		raw, err := onion.CreateDescriptor(seed, p.Period, p.Minutes, revision, intros, created)
 		clear(seed[:])
 		if err != nil {
@@ -65,12 +74,15 @@ func (h *Host) publish(ctx context.Context, s *directory.Snapshot, g *generation
 		if err != nil {
 			return err
 		}
-		targets, err := s.ServiceDirectories(blinded, p, time.Now())
+		targets, err := s.ServiceDirectories(blinded, p, now())
 		if err != nil {
 			return err
 		}
 		successes := 0
-		for _, target := range targets {
+		h.updateStatus(func(s *Status) {
+			s.Publications = append(s.Publications, PublicationStatus{Period: p.Period, Total: len(targets), Expires: onion.ServiceDescriptorExpiry(created)})
+		})
+		for index, target := range targets {
 			if ctx.Err() != nil {
 				return ctx.Err()
 			}
@@ -85,8 +97,13 @@ func (h *Host) publish(ctx context.Context, s *directory.Snapshot, g *generation
 			} else {
 				diagnostics.Log(ctx, h.options.Logger, "service_upload_failed", "error", err)
 			}
+			h.updateStatus(func(s *Status) {
+				p := &s.Publications[len(s.Publications)-1]
+				p.Attempted = index + 1
+				p.Uploaded = successes
+			})
 		}
-		diagnostics.Log(ctx, h.options.Logger, "service_descriptor_published", "period", p.Period, "directories", successes, "total", len(targets))
+		diagnostics.Info(ctx, h.options.Logger, "service_descriptor_published", "message", "Descriptor publication progress", "period", p.Period, "directories", successes, "total", len(targets))
 		if successes != len(targets) || successes == 0 {
 			failures = append(failures, errors.New("descriptor publication incomplete; retry scheduled"))
 		}

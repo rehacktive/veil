@@ -413,6 +413,9 @@ func testLocalTorHosting(t *testing.T, listen bool) {
 	first := nextGeneration()
 	select {
 	case <-ready:
+		if status := h.Status(); !status.Ready || status.Phase != "ready" || status.IntroductionPoints != 3 || len(status.Publications) != 2 {
+			t.Fatal("inconsistent published host status", status)
+		}
 	case <-time.After(20 * time.Second):
 		t.Fatal("initial descriptor publication incomplete")
 	}
@@ -421,6 +424,9 @@ func testLocalTorHosting(t *testing.T, listen bool) {
 	second := nextGeneration()
 	select {
 	case <-publicationBlocked:
+		if status := h.Status(); status.Ready || status.Phase != "publishing" || status.RetainedIntroductions != 3 {
+			t.Fatal("replacement lost partial availability status", status)
+		}
 	case <-time.After(10 * time.Second):
 		t.Fatal("replacement did not attempt publication")
 	}
@@ -447,6 +453,9 @@ func testLocalTorHosting(t *testing.T, listen bool) {
 	close(publicationRelease)
 	select {
 	case <-failedPublication:
+		if status := h.Status(); status.Ready || status.Phase != "retrying" || status.LastError == "" || status.NextAttempt.IsZero() {
+			t.Fatal("lost acknowledgments reported as published", status)
+		}
 	case <-time.After(20 * time.Second):
 		t.Fatal("lost publication replies were not reported")
 	}

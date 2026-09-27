@@ -1,5 +1,10 @@
 # Upstream baseline and attribution
 
+Current implementation notes were reviewed on 2026-09-27. Dated sections retain
+their original source provenance and measurements; they do not imply a newer
+upstream checkout or a new interoperability run. README.md describes the current
+API and ROADMAP.md tracks remaining work.
+
 Source: https://github.com/zydou/arti (a mirror of the Tor Project's Arti).
 
 Pinned commit: `abdbd50b85bed4bddd8afcb32cbf3db2cb794a43`
@@ -52,7 +57,7 @@ Deliberate boundaries and compatibility choices:
 - No server-side ntor API. Relay behavior used in tests is only a local simulation.
 - Parsers reject incomplete structures and cap allocations to their wire-format bounds. Handshake completion requires exactly 64 reply bytes after removing cell padding.
 - Invalid incoming relay authentication permanently invalidates the client cipher state.
-- Full 20-byte digest tags are used for authenticated directory-download SENDMEs. General-purpose stream windows, outgoing bulk traffic, and congestion control remain future work.
+- Full 20-byte digest tags are used for authenticated circuit SENDMEs in directory and application traffic. Fixed-window multiplexed streams and bidirectional bulk transfers are implemented; negotiated congestion control remains future work.
 
 ## Stage 3 directory sources and fixtures
 
@@ -110,7 +115,7 @@ The default guard context uses a persistent sample and confirmation order, deriv
 
 Refresh timing follows the client interval after freshness ends and before validity expires. `Session` reuses a channel across sequential requests, with fresh circuits, bounded draining to END, retired-circuit filtering, and channel teardown on failure/cancellation. The manager only retries transient failures; it does not automatically recover from rejected documents or state corruption. Already verified microdescriptor bytes are reused only when their hashes appear in the new signed consensus; network responses must match the particular request's digest set.
 
-This covers the default unrestricted context, not bridges, user-specified reachability/entry filters, path-bias accounting, or general application circuit management. A recently expired cache is usable only to locate existing directory guards for 24 hours; after that window, the manager uses pinned bootstrap relays to recover a fresh directory without clearing guard state. Data access still requires a live snapshot. See README.md for operational boundaries.
+This covers the default unrestricted guard context, not bridges, user-specified reachability/entry filters or path-bias accounting. Application circuit ownership, bounded build retries and scoped reuse are implemented separately in the client. A recently expired cache is usable only to locate existing directory guards for 24 hours; after that window, the manager uses pinned bootstrap relays to recover a fresh directory without clearing guard state. Data access still requires a live snapshot. See README.md for operational boundaries.
 
 ## Public bootstrap additions (0.8)
 
@@ -224,8 +229,9 @@ sample 0–999 microseconds and actual scheduling can be later.
 There is no circuitmux output queue in Veil: encrypted writes own a gate through
 flush. A padding cell is skipped if the gate is busy, so it cannot exceed any
 nonnegative `circpad_max_circ_queued_cells` limit. Introduction retention is a
-fixed ten minutes with a separate bounded capacity. Shared channel lifetime,
-adaptive retirement and full traffic/timing equivalence remain outside this step.
+fixed ten minutes with a separate bounded capacity. Shared channel lifetime was
+implemented in the subsequent step below. Adaptive retirement and full
+traffic/timing equivalence remain incomplete.
 
 ## Shared-channel lifetime and live policy — 2026-09-21
 
@@ -260,3 +266,31 @@ This is an implementation scheduling change, not a new Tor wire format or a port
 of C Tor's scheduler. Standard Go TLS controls record boundaries. The queue bound,
 whole-batch completion and shared-lease cancellation behavior are tested; DATA
 write aggregation and complete traffic equivalence remain outside this step.
+
+## Publication status and bootstrap retry reuse — 2026-09-27
+
+The service status API and JSON CLI are local lifecycle reporting; they add no Tor
+wire format or dependency. Upload acknowledgments are counted per period in the
+latest round. They do not prove reachability, and missing acknowledgments do not
+prove that an upload failed to reach its HSDir. Existing generation retention
+still covers every attempted upload through certificate expiry.
+Attempted periods are recorded after unsuccessful rounds too, so the next
+poll does not mistake them for a new period and bypass the scheduled retry.
+
+Bootstrap retains only complete responses that match all requested digests from
+an authority-verified consensus. A subsequent attempt fetches and verifies new
+certificates/consensus before filtering reusable bytes against its digest set.
+Selection-independent sorted requests, 64-descriptor batches, channel/session
+ownership, quorum, final snapshot verification and rollback checks are unchanged.
+Partial bytes live only within one refresh and never become an application
+snapshot or a persistent partial cache. This is an independent scheduling/storage
+change, not a port of Arti's directory sufficiency or consensus-diff algorithms.
+
+CLI operational logging now runs at INFO by default, including explicit proxy
+readiness and service publication completion. Detailed routing remains DEBUG;
+`-quiet` suppresses normal logs. This is a local UI change with no new protocol,
+TLS profile, dependency or global logger. Nil library loggers remain silent.
+
+A SOCKS forwarding fix ignores already-closed deadline setters after successful
+I/O so buffered response bytes can drain. Unexpected deadline failures still
+propagate; Tor END and the existing no-half-close behavior are unchanged.

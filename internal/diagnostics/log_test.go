@@ -33,3 +33,25 @@ func TestConcurrentLogsAreEscapedAndScoped(t *testing.T) {
 		t.Fatal("context bypassed disabled logging")
 	}
 }
+
+func TestCLILogLevels(t *testing.T) {
+	for _, mode := range []struct {
+		name         string
+		debug, quiet bool
+	}{
+		{"default", false, false}, {"debug", true, false}, {"quiet", false, true},
+	} {
+		t.Run(mode.name, func(t *testing.T) {
+			var out bytes.Buffer
+			logger := NewCLI(mode.debug, mode.quiet, &out)
+			Info(context.Background(), logger, "startup_complete")
+			Log(context.Background(), logger, "connection_detail", "destination", "private-destination")
+			if strings.Contains(out.String(), "startup_complete") != !mode.quiet {
+				t.Fatal(out.String())
+			}
+			if strings.Contains(out.String(), "private-destination") != mode.debug {
+				t.Fatal(out.String())
+			}
+		})
+	}
+}

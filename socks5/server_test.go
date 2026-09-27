@@ -111,6 +111,41 @@ func TestConnectPreservesHostnameAndPipelinedBytes(t *testing.T) {
 		}
 	}
 }
+
+type deadlineResultConn struct {
+	net.Conn
+	data *bytes.Reader
+	err  error
+}
+
+func (c deadlineResultConn) Read(b []byte) (int, error)  { return c.data.Read(b) }
+func (c deadlineResultConn) Write(b []byte) (int, error) { return len(b), nil }
+func (c deadlineResultConn) SetDeadline(time.Time) error { return c.err }
+
+func TestActivityPreservesBytesAfterPeerClose(t *testing.T) {
+	unexpected := errors.New("deadline configuration failed")
+	for _, deadlineErr := range []error{net.ErrClosed, io.ErrClosedPipe, unexpected} {
+		conn := deadlineResultConn{data: bytes.NewReader([]byte("last response")), err: deadlineErr}
+		a := &activity{local: deadlineResultConn{}, remote: conn, idle: time.Minute}
+		active := activeConn{Conn: conn, a: a}
+		var output bytes.Buffer
+		_, err := io.Copy(&output, active)
+		if output.String() != "last response" {
+			t.Fatal("buffered response lost")
+		}
+		if deadlineErr == unexpected {
+			if !errors.Is(err, unexpected) {
+				t.Fatal("unexpected deadline error hidden", err)
+			}
+		} else if err != nil {
+			t.Fatal("peer close became a transfer failure", err)
+		}
+		n, err := active.Write([]byte("request"))
+		if n != 7 || deadlineErr != unexpected && err != nil {
+			t.Fatal(n, err)
+		}
+	}
+}
 func TestRequests(t *testing.T) {
 	for _, tc := range []struct {
 		b                []byte

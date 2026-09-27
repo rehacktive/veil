@@ -22,8 +22,8 @@ const usage = `Veil: a native Go rewrite of Arti, stage 8 (SOCKS5, v3 onion clie
 
 Usage:
   veil version
-  veil proxy (-public | -config FILE) -state DIRECTORY [-listen 127.0.0.1:9050] [-onion-only] [-debug]
-  veil service (-public | -config FILE) -state DIRECTORY [-port 80] [-target 127.0.0.1:8080] [-debug]
+  veil proxy (-public | -config FILE) -state DIRECTORY [-listen 127.0.0.1:9050] [-onion-only] [-debug | -quiet]
+  veil service (-public | -config FILE) -state DIRECTORY [-port 80] [-target 127.0.0.1:8080] [-debug | -quiet] [-status-json]
   veil inspect [-link 4|5] [-handshake] [-payload] < cells.bin
   veil channel-check -address IP:port -rsa HEX -ed25519 HEX [-timeout 30s]
   veil directory-check -certificates FILE -consensus FILE -microdescriptors FILE -authorities CSV [-at RFC3339]
@@ -48,8 +48,10 @@ TCP streams. proxy maintains the directory, accepts loopback SOCKS5 CONNECT
 requests for public internet and v3 onion services, with circuits shared only within matching explicit SOCKS tokens and destinations.
 -onion-only restricts application destinations to valid v3 onion addresses.
 Tor relay and directory connections still use IP addresses.
--debug logs proxy activity, destinations and exit relays to stderr; otherwise
-normal proxy operation is silent. Help and fatal errors remain visible.
+proxy and service log startup, progress, readiness and shutdown to stderr.
+-debug adds connection activity, destinations and relay details.
+-quiet suppresses operational logs; help and fatal errors remain visible.
+-debug and -quiet cannot be combined. Service -status-json remains on stdout.
 Untagged connections use dedicated circuits. Onion setup has a separate -onion-timeout (default 3m).
 -public uses bundled Tor
 authority/fallback pins; -config selects a controlled network. Use make proxy-demo
@@ -85,7 +87,7 @@ func runContext(ctx context.Context, args []string, in io.Reader, out, diagnosti
 		_, err := fmt.Fprintf(out, "Veil %s (stage 8; native SOCKS5, v3 onion client and hosting)\n", version)
 		return err
 	case "service":
-		return hostService(ctx, args[1:], diagnostics)
+		return hostService(ctx, args[1:], out, diagnostics)
 	case "proxy":
 		return proxy(ctx, args[1:], out, diagnostics)
 	case "inspect":

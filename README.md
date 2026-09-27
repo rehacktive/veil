@@ -4,6 +4,11 @@ Veil is a staged, native Go rewrite of [Arti](https://github.com/zydou/arti), th
 
 **Current stage: experimental SOCKS5 client and v3 onion host.** It authenticates relay channels, downloads and verifies directory documents over native one-hop directory circuits (pinned CREATE_FAST for public bootstrap, ntor afterward), refreshes private caches, and maintains sampled/confirmed/primary guards. It selects compatible guard/middle/exit paths and builds them with CREATE2, EXTEND2, and type-2 ntor. It multiplexes TCP streams through a cancellable Go `net.Conn` API with authenticated SENDME flow control and exit-side DNS. `veil proxy` exposes those streams through a loopback SOCKS5 CONNECT listener, with circuit reuse inside explicit isolation scopes and dedicated circuits for untagged connections. V3 onion connections use authenticated descriptors, hs-ntor introductions/rendezvous, and an encrypted service hop. The Go implementation needs no Rust runtime, C Tor process, or cgo. It uses `filippo.io/edwards25519` for public-key blinding and coordinate conversion. An optional interoperability test launches C Tor separately as a test peer.
 
+State reviewed on 2026-09-27. Service publication status is available through
+`Host.Status()`, `Listener.Status()` and `veil service -status-json`. Directory
+refresh retries reuse completed, digest-verified microdescriptor batches in memory.
+See [VALIDATION.md](VALIDATION.md) for current checks and dated historical results.
+
 ## Browse the public internet
 
 From the repository directory:
@@ -24,8 +29,9 @@ see [bootstrap provenance](directory/data/README.md). It authenticates the
 fallback channel, verifies an authority majority and every required descriptor,
 then builds application circuits through three directory-selected relays.
 
-The proxy is quiet by default. Add `-debug` to the command above to see
-bootstrap progress and the `socks5_ready` message on stderr. First startup
+The proxy prints startup, bootstrap progress and the `socks5_ready` completion
+message on stderr by default. Add `-debug` for connection details or `-quiet`
+to suppress operational logs. First startup
 downloads tens of megabytes and can take several minutes (10-minute startup
 deadline); SOCKS requests are served once bootstrap completes.
 The private cache and persistent guards are reused on restart. Keep
@@ -33,6 +39,13 @@ The private cache and persistent guards are reused on restart. Keep
 and run only one Veil process per state directory. An OS lock rejects another
 owner automatically. Ctrl-C stops the proxy and releases ownership; a crash also
 releases it. Ctrl-C does not discard the persistent cache or guard sample.
+
+Within one directory refresh, a transient failure no longer discards completed
+microdescriptor batches. The next attempt downloads certificates and consensus
+again and reuses only bytes whose hashes occur in that verified consensus.
+Partial progress is not saved across process restarts or separate refresh calls.
+This reduces repeated downloads after interruptions; it does not reduce the
+complete catalog required for an uninterrupted first startup.
 
 In another terminal, test it with:
 
@@ -58,7 +71,7 @@ For a browser test, use a separate Firefox test profile. In its
 select manual proxy configuration, set **SOCKS Host** to **127.0.0.1**, port
 **9050**, select **SOCKS v5**, and enable **Proxy DNS when using SOCKS v5**.
 Leave HTTP/HTTPS proxy fields empty. Visit
-[the Tor checker](https://check.torproject.org/) once bootstrap completes (`socks5_ready` when debugging).
+[the Tor checker](https://check.torproject.org/) once bootstrap completes (`socks5_ready`).
 Return that profile to its previous proxy setting when finished.
 
 Public HTTPS through Veil has been tested; details are in [VALIDATION.md](VALIDATION.md).
@@ -275,12 +288,38 @@ In terminal 2:
 
 Leave Veil running too. Onion port **80** forwards to local port **8080**.
 First bootstrap and descriptor publication can take several minutes.
-`-debug` shows progress in this terminal; omit it for quiet operation.
+Progress is visible in this terminal by default. `-debug` adds connection and
+relay details; `-quiet` suppresses operational logs.
 
 `service_ready` reports successful publication to every selected HSDir in both
 periods. Some HSDirs may be unavailable: the host retries, and clients may already
 connect while publication is partial. `service_descriptor_published` reports the
 successful/total uploads per period; the hostname file alone is not readiness.
+
+For machine-readable progress without debug logs, use:
+
+```sh
+./bin/veil service -public -state ./state-service \
+  -port 80 -target 127.0.0.1:8080 -status-json
+```
+
+This emits newline-delimited JSON on stdout, sampling changes every 250 ms and
+coalescing unchanged snapshots. Each object contains `directory` bootstrap
+progress and `service` status. Operational and optional debug logs remain on
+stderr. Add `-quiet` for JSON-only normal output. A failed status write stops the
+command and joins its workers; help and fatal errors remain visible on stderr.
+
+Service status includes `phase`, `running`, `ready`, active current/retained
+introduction counts, `next_attempt`, `last_error`, and per-period `publications`
+with `uploaded`, `attempted`, `total`, and certificate `expires`. Counts describe
+the latest round, not cumulative coverage from older descriptors. `partial`
+means some uploads were acknowledged; `retrying` means the round failed with no
+acknowledged uploads. Lost replies can still mean the descriptor reached an HSDir.
+`ready` requires every selected HSDir in both periods to acknowledge publication,
+unexpired certificates and three active current introduction points. A lost point
+or expired certificate invalidates readiness immediately. This is local status,
+not a reachability probe. Older retained introductions can remain usable during
+replacement. `last_error` may include transport diagnostics.
 
 ### 3. Open your onion website
 
@@ -413,6 +452,13 @@ Returning from `Listen` does not mean the descriptors are published yet;
 `Accept` waits for incoming connections. A host failure unblocks `Accept` with
 an error matching `net.ErrClosed` and retaining the underlying cause.
 
+`listener.Status()` returns a concurrency-safe copy of the publication state
+described above; forwarding hosts expose the same API through `host.Status()`.
+A closed listener never reports ready and reports `draining` while accepted
+streams finish. Terminal host states are `stopped` for cancellation and `failed`
+for an error; startup/recovery can report `starting`, `introducing`, `publishing`,
+`recovering`, `capacity_wait` or `degraded`.
+
 `Close` rejects pending streams and unblocks all waiting `Accept` calls. It
 preserves connections already accepted by the application; close those
 connections to let the host drain. Canceling the context passed to `Listen`
@@ -436,7 +482,7 @@ make build
 ./bin/veil proxy -public -onion-only -state ./state-public -listen 127.0.0.1:9050
 ```
 
-Use the onion curl command above once bootstrap completes. With `-debug`,
+Use the onion curl command above once bootstrap completes. By default,
 readiness is reported as `socks5_ready mode=onion-only`. Ordinary hostnames and literal IPv4/IPv6 destinations are rejected
 with SOCKS reply **2** (connection not allowed by ruleset). Malformed requests
 may receive parser errors instead. Invalid, legacy v2 and unsupported onion
@@ -455,7 +501,25 @@ it each time you start dark mode. Debug output reports `mode=all` in normal mode
 relays/directories by IP; this is an application-destination restriction, not an
 IP firewall or a block on connections applications make outside this proxy.
 
-## Debug output
+## CLI logs and debug output
+
+`proxy` and `service` print timestamped operational logs to **stderr** by default:
+startup, directory download/verification, descriptor progress, scheduled retries,
+readiness and shutdown. `socks5_ready` explicitly announces
+`Startup complete: SOCKS5 proxy is ready` and includes the listening address.
+`service_ready` announces that onion descriptor publication is complete; partial
+publication has a separate progress/retry message. Readiness has the local-state
+meaning described in the hosting section, not a guarantee of remote reachability.
+Directory progress is sampled every five seconds and emitted only when it changes.
+
+Use `-quiet` to suppress operational logs. `-debug` and `-quiet` cannot be
+combined. JSON output stays on stdout, including service `-status-json`:
+
+```sh
+./bin/veil proxy -public -state ./state-public
+./bin/veil proxy -public -state ./state-public -quiet
+./bin/veil service -public -state ./state-service -status-json -quiet
+```
 
 Add `-debug` when launching the proxy:
 
@@ -474,14 +538,14 @@ and advertised relay address; that address is not necessarily the outbound IP
 seen by a website. Onion setup reports descriptor fetching, introduction attempts
 and rendezvous completion, with `exit=none`.
 
-Logs include destination hostnames/onion names and relay metadata. They exclude
+Debug logs include destination hostnames/onion names and relay metadata. They exclude
 SOCKS credentials, isolation tokens, keys, descriptor contents and traffic
 payloads. Values are escaped, and concurrent records are serialized. Veil writes
 no log files automatically.
 
-Without `-debug` (or with `-debug=false`), the proxy produces no normal logs,
-including no progress or readiness event on stdout. Help and fatal errors remain
-visible. Debug mode is not persisted; enable it explicitly on each launch.
+Without `-debug` (or with `-debug=false`), operational logs remain enabled;
+per-connection and routing detail stays at debug level. Help and fatal errors
+remain visible even with `-quiet`. Logging modes are not persisted.
 Library users may supply an optional `*slog.Logger` through `client.Options.Logger`
 or `socks5.Options.Logger`; nil is silent and no global logger is installed.
 
@@ -586,8 +650,8 @@ subnet separation and exit policies:
 ```
 
 The command restores or bootstraps a verified directory and keeps refreshing it.
-With `-debug`, a `socks5_ready` message reports the listening address once
-startup completes. Without the flag, normal operation produces no logs.
+A `socks5_ready` message reports the listening address once startup completes,
+unless `-quiet` is set.
 Use `curl --socks5-hostname 127.0.0.1:9050 ...` or `socks5h://127.0.0.1:9050`
 so destination hostnames reach Veil without local DNS lookup. Ordinary names
 resolve at the exit; v3 onion names use the service rendezvous protocol. The JSON schema
@@ -661,8 +725,9 @@ The address must be a numeric `IP:port` (bracket IPv6). The RSA fingerprint is 4
 | `circuit` | `tor-proto/circuit`, circuit construction | Verified three-hop clearnet and Vanguards-Lite onion selection, tracked guard attempts, CREATE2/EXTEND2, RELAY_EARLY budget, ordered relay messages, multiplexed `net.Conn` streams, SENDME/backpressure, deadlines/cancellation, bounded teardown |
 | `onion` | `tor-hscrypto`, `tor-netdoc/hsdesc` | V3 addresses, blinded keys, authenticated/decrypted descriptors, hs-ntor |
 | `client` | Client lifecycle | Verified snapshot/guard integration, scoped circuit reuse/rotation, dedicated untagged circuits, bounded descriptor caching, lifetime ownership and SOCKS failure mapping |
+| `service` | Onion hosting | Persistent identity, publication/renewal, overlapping introduction generations, bounded rendezvous/streams, loopback forwarding, native `net.Listener`, structured publication status |
 | `socks5` | SOCKS frontend | Loopback CONNECT, IPv4/IPv6/hostnames, token negotiation, bounded connections, timeouts, bidirectional relay and cleanup |
-| `cmd/veil` | Client and development tooling | `proxy`, version/help, offline frame inspection, pinned channel check, directory-check, directory-bootstrap, directory-watch, and circuit-check |
+| `cmd/veil` | Client and development tooling | `proxy`, `service` with optional JSON status, version/help, offline frame inspection, pinned channel check, directory-check, directory-bootstrap, directory-watch, and circuit-check |
 
 The module path is currently `veil`; change it and the internal imports together when a hosting location is chosen. The public API is provisional.
 
@@ -757,6 +822,15 @@ Keep the directory current until interrupted:
 `directory.NewManager(cache, guards, bootstrapRelays, options)` provides the same lifecycle to Go callers. `Run(ctx)` blocks until canceled or a verification/state error occurs; `Refresh(ctx)` performs one bounded download round. `BootstrapProgress()` returns a lock-safe UI snapshot with phase, readiness, completed/total microdescriptors and an integer percentage. Progress is explicitly indeterminate until the signed consensus supplies the descriptor total, so mobile integrations can show a spinner first and a progress bar afterward without inventing byte estimates. `Snapshot()` is safe to call concurrently and refuses expired or not-yet-valid data, even during an outage. A failed refresh retains the previous verified snapshot only within its validity interval. Authentication, document, clock-validity, rollback, and state-write errors stop the automatic loop rather than triggering indefinite retries.
 
 `directory.Cache.Load(now)` re-verifies every document; `Store` rejects an older or conflicting consensus. The manager authenticates expired caches at their original validation time. For up to 24 hours after expiry, it uses those descriptors solely to reconnect to already sampled directory guards. After longer offline periods, it downloads a fresh directory through the configured pinned bootstrap relays, preserving the guard sample and rollback protection. It returns to sampled directory guards once the fresh directory is verified and stored. Recovery never exposes expired snapshots as application directories or expands the sample from expired data. Corrupt caches and clocks earlier than the cached consensus still stop startup. `Snapshot.Valid(now)` and `Fresh(now)` distinguish validity from freshness. `-at` exists only for offline inspection.
+
+Downloads remain sequential on the authenticated directory session, in sorted
+batches of at most 64 digests, independently of future application paths. Every
+batch must contain exactly its requested descriptors before it becomes reusable.
+The complete microdescriptor budget is enforced as batches arrive (64 MiB), in
+addition to the 4 MiB response and 64 KiB individual limits. Only a complete,
+reverified snapshot is persisted. `Manager.Status()` retains successful response
+counts and decompressed response bytes across attempts of the last refresh,
+including after success; these are not wire-byte or failed-request counters.
 
 `GuardStore` persists a bounded, bandwidth-weighted sample and confirmation order. Primary guards are derived from that state; failures do not delete identities or select an unrestricted new set. Separate directory reachability prevents a failed directory request from poisoning ordinary-circuit reachability. Guard dates are randomized, unlisted/old entries expire under live consensuses, retry delays are jittered, and pending non-primary attempts must pass a usability check. Existing version-1 single-guard files migrate while preserving the chosen identity as an unconfirmed sampled guard.
 
@@ -914,9 +988,9 @@ Cipher and digest state persists across cells. Never reuse handshake secrets, sh
 ## Validation
 
 ```sh
-make check  # vet, race detector, test coverage
+make check  # vet, race detector, test coverage, Python measurement tests
 make security # gosec (requires an installed gosec executable)
-make fuzz   # nine bounded 10-second fuzz runs
+make fuzz   # twelve bounded 10-second fuzz runs
 ```
 
 The gosec scan uses all default rules. Narrow protocol/CLI exceptions and their

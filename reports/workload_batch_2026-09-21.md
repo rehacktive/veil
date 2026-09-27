@@ -1,5 +1,11 @@
 # Raggruppamento delle scritture di controllo — 21 settembre 2026
 
+Nota di revisione del 27 settembre: resta l'ultimo confronto di traffico
+registrato, relativo alla build e al carico descritti sotto. Non misura le
+successive modifiche a stato del servizio, bootstrap e chiusura SOCKS. I dati
+originali sono conservati; verifiche e limiti attuali sono in
+[VALIDATION](../VALIDATION.md) e [ROADMAP](../ROADMAP.md).
+
 La mediana dei record TLS in uscita durante il download scende da 128 a 120
 (-6,25%). Compaiono record che raggruppano due celle, ma la distribuzione resta
 diversa da C Tor (mediana 108 record nelle nuove prove). Il tempo mediano del

@@ -377,7 +377,17 @@ func (a *activity) touch() error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	deadline := time.Now().Add(a.idle)
-	return errors.Join(a.local.SetDeadline(deadline), a.remote.SetDeadline(deadline))
+	var failures []error
+	for _, conn := range []net.Conn{a.local, a.remote} {
+		err := conn.SetDeadline(deadline)
+		// A peer may close just after a successful Read/Write. Its closed
+		// deadline setter must not turn delivered bytes into an I/O failure
+		// that tears down the opposite copy before buffered data is forwarded.
+		if err != nil && !errors.Is(err, net.ErrClosed) && !errors.Is(err, io.ErrClosedPipe) {
+			failures = append(failures, err)
+		}
+	}
+	return errors.Join(failures...)
 }
 
 type activeConn struct {

@@ -1,6 +1,6 @@
 # Native Go client roadmap
 
-The goal is an embeddable native Tor client, with a SOCKS command built on the same library. Stages follow dependency order. Checked items exist in this repository; all other stages are unimplemented.
+The goal is an embeddable native Tor client, with a SOCKS command built on the same library. Stages follow dependency order. Checked items exist in this repository; unchecked items describe remaining work, including extensions to partially implemented stages. State reviewed on 2026-09-27; dated test evidence is in [VALIDATION.md](VALIDATION.md).
 
 ## 1. Wire and cryptographic foundation — complete
 
@@ -38,6 +38,8 @@ The implementation and negative tests are present. Automated Go tests use a loca
 - [x] Add a cancellable manager and `veil directory-watch` with randomized refresh scheduling, bounded retries, cache reuse, and per-round channel reuse.
 - [x] Test failure/cancellation, guard migration and persistence, recent-expiry recovery, scheduled live refresh, and warm restart.
 - [x] Recover beyond 24 hours through pinned bootstrap relays while preserving guard state and rollback protection.
+- [x] Resume completed, digest-verified microdescriptor batches across transient attempts within a refresh; enforce the catalog budget incrementally and retain download counters after success.
+- [ ] Measure uninterrupted cold-start costs and evaluate consensus diffs/additional compression; partial progress is currently memory-only within one refresh.
 - [ ] Add restricted/bridge guard contexts and path-bias integration with application circuits.
 - [x] Run a complete live authority-consensus-microdescriptor bootstrap against a controlled three-relay Tor network.
 
@@ -67,7 +69,7 @@ C Tor 0.4.9.12 interoperability passed for four concurrent 2 MiB round trips, ex
 - [x] Bundle official public-network authority/fallback pins, implement directory-only CREATE_FAST bootstrap, and verify real public HTTPS through SOCKS5.
 - [x] Add exclusive state ownership across all stateful CLI commands, crash-safe lock release, and bounded circuit-build retries.
 - [x] Add opt-in onion-only destination policy in the CLI, SOCKS server and Go dialer, with explicit readiness mode.
-- [x] Add explicit `-debug` terminal diagnostics for proxy lifecycle, routing and exit relays; keep normal proxy operation quiet.
+- [x] Report CLI startup, bootstrap progress, readiness and shutdown by default; keep per-connection/routing detail behind `-debug` and support `-quiet`.
 - [x] Add explicit SOCKS token isolation, destination/family separation and bounded circuit reuse/rotation.
 - [ ] Add mature adaptive circuit policy and stream retry policy.
 - [x] Schedule consensus-controlled idle padding on application guard links, negotiate START/STOP and reject relay attempts to control client padding.
@@ -119,10 +121,12 @@ and remaining limits are recorded in VALIDATION.md and README.md.
 - [x] Establish introduction points, publish to overlapping HSDir rings and renew descriptors.
 - [x] Authenticate service-side hs-ntor requests, reject replays and join rendezvous circuits.
 - [x] Accept bounded incoming streams and forward one virtual port to a fixed loopback backend.
-- [x] Expose `veil service`, with quiet defaults, optional debug output and joined shutdown.
+- [x] Expose `veil service`, with operational logs, optional debug/quiet modes and joined shutdown.
+- [x] Expose concurrent `Host.Status()` / `Listener.Status()` and opt-in CLI JSON status, including partial publication, per-period upload counts, retained introductions, retry timing and shutdown state.
 - [x] Verify private C Tor client interoperability: HTTP, concurrent multi-megabyte downloads, unmapped-port rejection and clean shutdown.
 - [x] Verify public C Tor client interoperability: HTTP, three concurrent 2.4 MB downloads and unmapped-port rejection. Fix fresh-bootstrap and mandatory-endpoint path selection failures.
-- [ ] Improve partial-publication readiness reporting and verify long-running public hosting/rotation.
+- [x] Test partial/failed publication and recovery status, expiry, lost introduction points, concurrent polling and listener draining.
+- [ ] Verify long-running public hosting/rotation across repeated publication periods and network outages.
 - [x] Preserve active rendezvous circuits and streams across introduction rotation and recovery, within host-wide resource and lifetime limits.
 - [x] Retain advertised introduction generations through certificate expiry; verify new connections with cached and fresh descriptors, partial publication and lost upload replies within bounded shared resources.
 - [x] Enable Vanguards-Lite for onion client and hosting: shared bounded L2 pool, signed lifetime/count parameters, endpoint-independent guards and three/four-relay paths.

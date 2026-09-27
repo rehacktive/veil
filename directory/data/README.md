@@ -1,5 +1,9 @@
 # Public-network bootstrap pins
 
+Provenance reviewed on 2026-09-27; the bundled data and the hashes below have
+not been regenerated. Bootstrap retry reuse changes only in-memory descriptor
+downloads, not authority identities, fallback pins or the configured quorum.
+
 `mainnet.json` contains the nine authority identities and all 200 fallback
 relays from the official Tor Project Arti repository, retrieved over HTTPS on
 2026-09-20. The fallback list was generated on 2026-06-25. These are bundled
@@ -8,8 +12,8 @@ is to obtain an authority-signed directory, not to select application paths.
 
 Sources:
 
-- https://gitlab.torproject.org/tpo/core/arti/-/raw/main/crates/tor-dircommon/src/authority.rs
-- https://gitlab.torproject.org/tpo/core/arti/-/raw/main/crates/tor-dircommon/data/fallback_dirs.rs
+- [Authority source](https://gitlab.torproject.org/tpo/core/arti/-/raw/main/crates/tor-dircommon/src/authority.rs)
+- [Fallback source](https://gitlab.torproject.org/tpo/core/arti/-/raw/main/crates/tor-dircommon/data/fallback_dirs.rs)
 
 SHA-256 of the retrieved source files:
 

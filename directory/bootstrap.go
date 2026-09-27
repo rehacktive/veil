@@ -33,6 +33,8 @@ type descriptorProgressSource interface {
 // Bootstrap authenticates a complete directory. Certificates and consensus are
 // verified before requesting microdescriptors; all digest requests are sorted
 // and batched independently of the paths that will later be selected.
+// On error, Documents may contain partial downloads; only a nil error and a
+// complete Snapshot authorize their use as a directory.
 func Bootstrap(ctx context.Context, source Source, roots []Fingerprint, now time.Time) (*Snapshot, Documents, error) {
 	return bootstrap(ctx, source, roots, now, Documents{})
 }
@@ -93,6 +95,15 @@ func bootstrap(ctx context.Context, source Source, roots []Fingerprint, now time
 	}
 	sort.Strings(sorted)
 	sort.Strings(missing)
+	// Keep only digest-bound bytes, including completed batches on transient
+	// failure. The manager may reuse them within this refresh, but never exposes
+	// or persists an incomplete directory. Bound memory before each append.
+	for _, key := range sorted {
+		if len(d.Microdescriptors)+len(known[key]) > MaxMicrodescriptorsSize {
+			return nil, d, fmt.Errorf("%w: combined microdescriptors exceed %d bytes", ErrDocument, MaxMicrodescriptorsSize)
+		}
+		d.Microdescriptors = append(d.Microdescriptors, known[key]...)
+	}
 	if progress, ok := source.(descriptorProgressSource); ok {
 		progress.descriptorProgress(len(digests), len(known))
 	}
@@ -110,28 +121,31 @@ func bootstrap(ctx context.Context, source Source, roots []Fingerprint, now time
 		if err != nil {
 			return nil, d, err
 		}
+		batch := make(map[string][]byte, len(parts))
 		for _, part := range parts {
 			hash := sha256.Sum256(part)
 			key := base64.RawStdEncoding.EncodeToString(hash[:])
-			if !requested[key] || known[key] != nil {
+			if !requested[key] || known[key] != nil || batch[key] != nil {
 				return nil, d, fmt.Errorf("%w: unrequested/duplicate microdescriptor", ErrTrust)
 			}
-			known[key] = part
+			batch[key] = part
 		}
 		for key := range requested {
-			if known[key] == nil {
+			if batch[key] == nil {
 				return nil, d, fmt.Errorf("%w: missing requested microdescriptor", ErrTrust)
 			}
+		}
+		if len(d.Microdescriptors)+len(b) > MaxMicrodescriptorsSize {
+			return nil, d, fmt.Errorf("%w: combined microdescriptors exceed %d bytes", ErrDocument, MaxMicrodescriptorsSize)
+		}
+		// Commit the entire response only after checking all requested digests.
+		d.Microdescriptors = append(d.Microdescriptors, b...)
+		for key, part := range batch {
+			known[key] = part
 		}
 		if progress, ok := source.(descriptorProgressSource); ok {
 			progress.descriptorProgress(len(digests), len(known))
 		}
-	}
-	for _, key := range sorted {
-		if len(d.Microdescriptors)+len(known[key]) > MaxMicrodescriptorsSize {
-			return nil, d, fmt.Errorf("%w: combined microdescriptors exceed %d bytes", ErrDocument, MaxMicrodescriptorsSize)
-		}
-		d.Microdescriptors = append(d.Microdescriptors, known[key]...)
 	}
 	if err := ctx.Err(); err != nil {
 		return nil, d, err

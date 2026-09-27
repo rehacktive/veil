@@ -14,6 +14,7 @@ import (
 // Close stops acceptance; the host drains accepted connections until they are
 // closed. Cancel the context passed to Listen to stop the host and all streams.
 type Listener struct {
+	host       *Host
 	addr       onionAddr
 	cancel     context.CancelFunc
 	acceptCtx  context.Context
@@ -60,6 +61,7 @@ func startListener(parent context.Context, h *Host, addr onionAddr) *Listener {
 	ctx, cancel := context.WithCancel(parent)
 	acceptCtx, stopAccept := context.WithCancel(ctx)
 	l := &Listener{addr: addr, cancel: cancel, acceptCtx: acceptCtx, stopAccept: stopAccept, pending: make(chan *listenerConn), closed: make(chan struct{}), done: make(chan struct{})}
+	l.host = h
 	h.listener = l
 	stop := context.AfterFunc(ctx, func() { l.closeWithError(ctx.Err()) })
 	go func() {

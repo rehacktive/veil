@@ -58,6 +58,7 @@ func TestProxyCLIFlags(t *testing.T) {
 		{"proxy", "-public", "-state", "state", "-max-pooled-circuits", "257"},
 		{"proxy", "-public", "-state", "state", "-build-attempts", "0"},
 		{"proxy", "-public", "-state", "state", "-build-attempts", "6"},
+		{"proxy", "-public", "-state", "state", "-debug", "-quiet"},
 		{"proxy", "-config", "missing", "-state", "state", "-connect-timeout", "0"},
 		{"proxy", "-config", "missing", "-state", "state", "-idle-timeout", "-1s"},
 		{"proxy", "-config", "missing", "-state", "state", "-max-connections", "257"},
@@ -88,7 +89,7 @@ func TestProxyDirectoryLifecycle(t *testing.T) {
 				m.failure <- directory.ErrTrust
 			}
 			ready := make(readyWriter, 64)
-			logger := slog.New(slog.NewJSONHandler(ready, &slog.HandlerOptions{Level: slog.LevelDebug}))
+			logger := slog.New(slog.NewJSONHandler(ready, &slog.HandlerOptions{Level: slog.LevelInfo}))
 			done := make(chan error, 1)
 			go func() {
 				done <- serveProxy(ctx, listener, m, func(context.Context, string, string) (net.Conn, error) { return nil, errors.New("test dial failure") }, 30*time.Millisecond, socks5.Options{Logger: logger, OnionOnly: stage == "onion-only"})
@@ -105,6 +106,9 @@ func TestProxyDirectoryLifecycle(t *testing.T) {
 				}
 				if status["msg"] != "socks5_ready" {
 					t.Fatal(status)
+				}
+				if !strings.Contains(status["message"], "Startup complete") {
+					t.Fatal("missing startup completion", status)
 				}
 				wantMode := "all"
 				if stage == "onion-only" {
@@ -151,11 +155,14 @@ func TestProxyDirectoryLifecycle(t *testing.T) {
 			default:
 				t.Fatal("directory goroutine leaked")
 			}
+			if strings.HasPrefix(stage, "startup-") && len(ready) != 0 {
+				t.Fatal("readiness announced after failed bootstrap")
+			}
 		})
 	}
 }
 
-func TestProxyQuietByDefault(t *testing.T) {
+func TestProxyQuietMode(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	listener, err := socks5.Listen(ctx, "127.0.0.1:0")
@@ -170,7 +177,7 @@ func TestProxyQuietByDefault(t *testing.T) {
 		done <- serveProxy(ctx, listener, m, func(context.Context, string, string) (net.Conn, error) {
 			t.Error("blocked destination reached dialer")
 			return nil, errors.New("unexpected dial")
-		}, time.Second, socks5.Options{OnionOnly: true, Logger: diagnostics.New(false, &logs)})
+		}, time.Second, socks5.Options{OnionOnly: true, Logger: diagnostics.NewCLI(false, true, &logs)})
 	}()
 	c, err := net.DialTimeout("tcp", listener.Addr().String(), time.Second)
 	if err != nil {
@@ -209,7 +216,7 @@ func TestProxyQuietByDefault(t *testing.T) {
 }
 
 func TestProxyDebugFlagIsPerInvocation(t *testing.T) {
-	for _, flag := range []string{"-debug", "-debug=false", ""} {
+	for _, flag := range []string{"-debug", "-quiet", "-debug=false", ""} {
 		var out, logs bytes.Buffer
 		args := []string{"-public", "-state", t.TempDir(), "-listen", "0.0.0.0:9050"}
 		if flag != "" {
@@ -222,12 +229,49 @@ func TestProxyDebugFlagIsPerInvocation(t *testing.T) {
 		if out.Len() != 0 {
 			t.Fatal("proxy wrote to stdout")
 		}
-		if flag == "-debug" {
+		if flag != "-quiet" {
 			if !strings.Contains(logs.String(), "proxy_starting") || !strings.Contains(logs.String(), "proxy_stopped") {
 				t.Fatal(logs.String())
 			}
 		} else if logs.Len() != 0 {
 			t.Fatal("logging remained enabled", logs.String())
 		}
+	}
+}
+
+func TestDirectoryOperationalProgressKeepsErrorsInDebug(t *testing.T) {
+	for _, phase := range []string{"certificates", "consensus", "microdescriptors", "verification", "cache", "retry", ""} {
+		for _, debug := range []bool{false, true} {
+			var logs bytes.Buffer
+			status := directory.ManagerStatus{Phase: phase, Live: true, Failures: 1, LastError: "private-relay-detail"}
+			logDirectoryProgress(context.Background(), diagnostics.NewCLI(debug, false, &logs), status)
+			if !strings.Contains(logs.String(), "directory_progress") {
+				t.Fatal(logs.String())
+			}
+			if phase == "retry" && !strings.Contains(logs.String(), "retry scheduled") {
+				t.Fatal("cached directory concealed refresh failure", logs.String())
+			}
+			if strings.Contains(logs.String(), "private-relay-detail") != debug {
+				t.Fatal(logs.String())
+			}
+		}
+	}
+}
+
+func TestCanceledStartupNeverBecomesReady(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	m := &fakeProxyDirectory{}
+	m.ready.Store(true)
+	if err, _ := waitDirectory(ctx, m, make(chan error)); !errors.Is(err, context.Canceled) {
+		t.Fatal(err)
+	}
+}
+
+func TestRefreshProgressDoesNotUseCachedReadinessPercentage(t *testing.T) {
+	var logs bytes.Buffer
+	logDirectoryProgress(context.Background(), diagnostics.NewCLI(false, false, &logs), directory.ManagerStatus{Phase: "microdescriptors", Live: true, Microdescriptors: 25, MicrodescriptorsTotal: 100})
+	if !strings.Contains(logs.String(), "percent=25") || !strings.Contains(logs.String(), "ready=true") {
+		t.Fatal(logs.String())
 	}
 }

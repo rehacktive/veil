@@ -19,8 +19,8 @@ type ManagerOptions struct {
 }
 type ManagerStatus struct {
 	Phase                 string    `json:"phase,omitempty"`
-	DownloadRequests      int       `json:"download_requests,omitempty"`
-	DownloadBytes         int64     `json:"download_bytes,omitempty"`
+	DownloadRequests      int       `json:"download_requests,omitempty"` // Successful responses across the last refresh's attempts.
+	DownloadBytes         int64     `json:"download_bytes,omitempty"`    // Decompressed bytes from those responses, not wire bytes.
 	Microdescriptors      int       `json:"microdescriptors,omitempty"`
 	MicrodescriptorsTotal int       `json:"microdescriptors_total,omitempty"`
 	Directory             Info      `json:"directory"`
@@ -267,6 +267,11 @@ func (m *Manager) Refresh(ctx context.Context) (*Snapshot, error) {
 	if err := m.restore(); err != nil {
 		return nil, err
 	}
+	m.mu.Lock()
+	previous := m.docs
+	m.status.DownloadRequests = 0
+	m.status.DownloadBytes = 0
+	m.mu.Unlock()
 	var last error
 	for i := 0; i < m.options.Attempts; i++ {
 		if i > 0 {
@@ -278,14 +283,9 @@ func (m *Manager) Refresh(ctx context.Context) (*Snapshot, error) {
 		if err == nil {
 			attemptCtx, cancel := context.WithTimeout(ctx, m.options.AttemptTimeout)
 			fetcher, closer := m.factory(attemptCtx, source, guard)
-			m.mu.RLock()
-			previous := m.docs
-			m.mu.RUnlock()
 			var s *Snapshot
 			var docs Documents
 			m.mu.Lock()
-			m.status.DownloadRequests = 0
-			m.status.DownloadBytes = 0
 			m.status.Microdescriptors = 0
 			m.status.MicrodescriptorsTotal = 0
 			m.mu.Unlock()
@@ -298,6 +298,11 @@ func (m *Manager) Refresh(ctx context.Context) (*Snapshot, error) {
 				}
 				// Cleanup failure is local state failure, not guard reachability.
 				return nil, errors.Join(err, fmt.Errorf("%w: directory session cleanup: %w", ErrState, closeErr))
+			}
+			if err != nil && !permanent(err) && len(docs.Microdescriptors) > 0 {
+				// Only completed, digest-bound batches survive to the next
+				// attempt. Its freshly verified consensus filters them again.
+				previous = Documents{Microdescriptors: docs.Microdescriptors}
 			}
 			if guard != nil {
 				if err != nil && ctx.Err() == nil && !errors.Is(err, ErrGuardWaiting) {
@@ -346,7 +351,7 @@ func (m *Manager) Refresh(ctx context.Context) (*Snapshot, error) {
 				total := m.status.MicrodescriptorsTotal
 				m.current = s
 				m.docs = docs
-				m.status = ManagerStatus{NextAttempt: next, Microdescriptors: completed, MicrodescriptorsTotal: total}
+				m.status = ManagerStatus{NextAttempt: next, Microdescriptors: completed, MicrodescriptorsTotal: total, DownloadRequests: m.status.DownloadRequests, DownloadBytes: m.status.DownloadBytes}
 				m.mu.Unlock()
 				return s, nil
 			}

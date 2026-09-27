@@ -1,4 +1,81 @@
-# Veil 0.13 native onion hosting validation
+# Veil validation
+
+The latest checks are recorded first. Older dated/versioned sections preserve
+their original results and then-current limitations; see README.md and ROADMAP.md
+for the present implementation and outstanding work.
+
+## Default CLI operational logs — 2026-09-27
+
+`veil proxy` and `veil service` now log startup, directory progress, readiness,
+publication/recovery activity and shutdown at INFO level on stderr by default.
+`-debug` adds connection/routing details; `-quiet` suppresses operational logs.
+The two flags are mutually exclusive. Help and fatal errors remain visible,
+and service JSON status stays on stdout.
+
+The proxy's `socks5_ready` event explicitly says startup is complete. Service
+readiness is logged only after complete descriptor publication. Tests verify
+INFO-level proxy readiness through a working local SOCKS listener, no readiness
+after failed/canceled startup, quiet mode, per-invocation modes, separate stdout,
+and exclusion of detailed directory errors unless debug is enabled. A cached
+live directory does not hide refresh retries or force refresh progress to 100%.
+Library instances with nil loggers remain silent.
+
+`make check` passed (vet, full race/coverage suite, seven Python tests), as did
+the production build, both commands' help checks and default gosec with zero
+findings. The historical quiet-by-default sections below describe earlier CLI
+behavior and are retained as dated evidence.
+
+## Publication status, bootstrap retry reuse and SOCKS close handling — 2026-09-27
+
+The service exposes `Host.Status()` and `Listener.Status()`, with per-period
+acknowledged/attempted/total uploads, expiry, active/retained introductions,
+next attempt, last error and lifecycle phase. `veil service -status-json` emits
+coalesced directory/service snapshots on stdout, independently of debug logs.
+Readiness describes local publication state, not guaranteed reachability.
+
+Automated checks cover:
+
+- Partial publication, zero acknowledged uploads, recovery to complete
+  publication, expiry, lost introduction readers and advertised-key retention.
+- Concurrent status reads during generation changes, immutable returned slices,
+  cancellation/failure states and listener draining.
+- JSON change emission, final status, unchanged-snapshot suppression and output
+  errors, including short writes.
+- Bootstrap retry reuse with a signed 130-relay fixture and a transient failure
+  on the second microdescriptor request. The first 64 verified descriptors are
+  reused: 130 descriptors are delivered in total, versus 194 with the previous
+  restart behavior. This is a deterministic request-volume check, not a public
+  network wall-clock benchmark or a reduction in uninterrupted cold-start size.
+- Rebinding partial bytes to a freshly verified consensus and rejection of
+  forged consensus signatures, duplicate/missing/unrequested batch entries.
+  Partial bytes never become an application snapshot or persistent cache and
+  are discarded when a refresh ends unsuccessfully.
+- Retained successful-response counts/bytes after a refresh completes.
+- SOCKS buffered-response delivery after peer close, while preserving unexpected
+  deadline failures. The existing pipelined CONNECT test reproduced an intermittent
+  EOF before the fix; it and the deterministic regression test passed 100 repeats
+  with the race detector after the fix.
+
+Validation on Go 1.27.1 / macOS arm64:
+
+- `go test -race ./... -timeout=2m`: passed after the SOCKS correction.
+- Final `make check`: passed (vet, full race/coverage suite, seven Python tests).
+- `go vet ./...` and `go vet -tags veiltraffic ./...`: passed.
+- Python measurement tests: seven passed.
+- Default gosec 2.29.0: 69 production files, zero findings, 19 existing annotations.
+- Suppression-disabled gosec audit: exactly 19 expected findings (G401: 8,
+  G505: 5, G407: 4, G402: 1, G304: 1), with no additional rules/findings.
+- Production build and `veil service -h`, including `-status-json`: passed.
+- `go test -tags veiltest ./service -timeout=60s`: passed for offline tests;
+  the live hosting test was skipped without its private-network harness.
+
+The live hosting test now also checks reported readiness, retained introductions
+during replacement, and lost-upload-reply status. That C Tor hosting scenario
+was not rerun: the local `tor-gencert` executable is unavailable. Previous live
+results below remain historical. No new public-network hosting, long-duration
+availability, traffic-fingerprint or independent security review is claimed.
+
+## Veil 0.13 native onion hosting history
 
 ## Long-offline directory recovery — 2026-09-26
 

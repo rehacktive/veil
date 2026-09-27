@@ -19,6 +19,7 @@ func proxy(ctx context.Context, args []string, _, diagnosticOutput io.Writer) (r
 	f := flag.NewFlagSet("proxy", flag.ContinueOnError)
 	f.SetOutput(diagnosticOutput)
 	debug := f.Bool("debug", false, "log proxy activity, destinations and exit relay details to stderr")
+	quiet := f.Bool("quiet", false, "suppress operational logs; fatal errors remain visible")
 	onionOnly := f.Bool("onion-only", false, "dark mode: permit only valid v3 onion application destinations")
 	public := f.Bool("public", false, "use bundled public Tor authority/fallback pins; no bootstrap JSON needed")
 	config := f.String("config", "", "bootstrap JSON with trusted authority and relay pins")
@@ -56,9 +57,14 @@ func proxy(ctx context.Context, args []string, _, diagnosticOutput io.Writer) (r
 			*bootstrap = 10 * time.Minute
 		}
 	}
-	logger := diagnostics.New(*debug, diagnosticOutput)
-	diagnostics.Log(ctx, logger, "proxy_starting", "onion_only", *onionOnly, "public", *public)
-	defer func() { diagnostics.Log(ctx, logger, "proxy_stopped", "error", result) }()
+	if *debug && *quiet {
+		return errors.New("-debug and -quiet cannot be used together")
+	}
+	logger := diagnostics.NewCLI(*debug, *quiet, diagnosticOutput)
+	diagnostics.Info(ctx, logger, "proxy_starting", "message", "Starting Veil SOCKS5 proxy", "onion_only", *onionOnly, "public", *public)
+	defer func() {
+		diagnostics.Info(ctx, logger, "proxy_stopped", "message", "Veil proxy stopped", "error", result)
+	}()
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	// Bind before opening state or bootstrapping, to report occupied/unsafe
@@ -85,7 +91,7 @@ func proxy(ctx context.Context, args []string, _, diagnosticOutput io.Writer) (r
 	}
 
 	if logger != nil {
-		diagnostics.Log(ctx, logger, "directory_bootstrap", "note", "first bootstrap may take several minutes")
+		diagnostics.Info(ctx, logger, "directory_bootstrap", "message", "Loading cached directory or downloading a verified directory; first startup may take several minutes")
 		progressCtx, stopProgress := context.WithCancel(ctx)
 		progressDone := make(chan struct{})
 		go func() { defer close(progressDone); directoryProgress(progressCtx, manager, logger) }()
@@ -127,7 +133,7 @@ func serveProxy(ctx context.Context, listener net.Listener, manager proxyDirecto
 	if options.OnionOnly {
 		mode = "onion-only"
 	}
-	diagnostics.Log(ctx, options.Logger, "socks5_ready", "mode", mode, "listen", listener.Addr().String())
+	diagnostics.Info(ctx, options.Logger, "socks5_ready", "message", "Startup complete: SOCKS5 proxy is ready", "mode", mode, "listen", listener.Addr().String())
 	served := make(chan error, 1)
 	go func() { served <- socks5.Serve(ctx, listener, dial, options) }()
 	select {
@@ -150,6 +156,9 @@ func waitDirectory(ctx context.Context, m interface {
 	tick := time.NewTicker(50 * time.Millisecond)
 	defer tick.Stop()
 	for {
+		if err := ctx.Err(); err != nil {
+			return err, false
+		}
 		if _, err := m.Snapshot(); err == nil {
 			return nil, false
 		}
@@ -196,8 +205,49 @@ func directoryProgress(ctx context.Context, m *directory.Manager, logger *slog.L
 			continue
 		}
 		if status != previous {
-			diagnostics.Log(ctx, logger, "directory_progress", "phase", progress.Phase, "ready", progress.Ready, "determinate", progress.Determinate, "percent", progress.Percent, "completed", progress.Completed, "total", progress.Total, "requests", status.DownloadRequests, "bytes", status.DownloadBytes, "failed_attempts", status.Failures, "error", status.LastError)
+			logDirectoryProgress(ctx, logger, status)
 			previous = status
 		}
+	}
+}
+
+func logDirectoryProgress(ctx context.Context, logger *slog.Logger, status directory.ManagerStatus) {
+	progress := status.BootstrapProgress()
+	phase := progress.Phase
+	if status.Phase != "" {
+		phase = status.Phase
+	}
+	message := "Updating directory"
+	switch phase {
+	case "certificates":
+		message = "Downloading authority certificates"
+	case "consensus":
+		message = "Downloading and verifying consensus"
+	case "microdescriptors":
+		message = "Downloading relay descriptors"
+	case "verification":
+		message = "Verifying complete directory"
+	case "cache":
+		message = "Saving verified directory"
+	case "retry":
+		message = "Directory download interrupted; retry scheduled"
+	case "ready":
+		message = "Verified directory is ready"
+	}
+	attrs := []any{"message", message, "phase", phase, "ready", progress.Ready}
+	if status.MicrodescriptorsTotal > 0 {
+		// A still-live old snapshot must not make a new download appear 100% complete.
+		download := status
+		download.Live = false
+		p := download.BootstrapProgress()
+		attrs = append(attrs, "percent", p.Percent, "completed", p.Completed, "total", p.Total)
+	}
+	if status.Failures > 0 {
+		attrs = append(attrs, "failed_attempts", status.Failures, "next_attempt", status.NextAttempt)
+	}
+	diagnostics.Info(ctx, logger, "directory_progress", attrs...)
+	diagnostics.Log(ctx, logger, "directory_download_metrics", "requests", status.DownloadRequests, "bytes", status.DownloadBytes)
+	if status.LastError != "" {
+		diagnostics.Log(ctx, logger, "directory_error", "error", status.LastError)
 	}
 }

@@ -1,5 +1,51 @@
 # Security scanning
 
+## Current state — 2026-09-27
+
+The CLI now enables INFO lifecycle logs by default for `proxy` and `service`.
+They report coarse directory progress, local listener readiness, publication
+counts/retries and shutdown. Per-request destinations, relay selection and raw
+directory retry errors remain at DEBUG level. `-quiet` disables operational
+logging; help and fatal errors remain visible. Logging remains per-instance,
+with no global logger or automatic log files. Library users supplying no logger
+remain silent. JSON status remains separate on stdout. The historical quiet-by-
+default debug milestone below predates this CLI behavior.
+
+Default gosec 2.29.0 reports **69 production files, zero findings and 19 existing
+annotations**. No dependency or suppression was added for service status,
+bootstrap retry reuse or the SOCKS deadline fix. Sections dated earlier below
+record historical scans; their file counts and test results are not current totals.
+No independent security/privacy audit has been performed.
+
+The suppression-disabled audit also ran: exactly the 19 expected findings
+(8 G401, 5 G505, 4 G407, 1 G402, 1 G304), with no additional findings.
+
+Service status is a concurrency-safe copy of local observations. Full readiness
+requires acknowledged publication to every selected HSDir in both periods,
+unexpired certificates and all three current introduction readers. A partial
+round can already be reachable, and a lost reply can still leave a usable
+descriptor. Status never shortens retained generation lifetimes or changes
+publication, replay or stream admission policy. The optional `-status-json`
+output uses stdout separately from stderr debug logs, coalesces snapshots and
+joins its worker on shutdown. No keys, payloads or descriptors are reported;
+`last_error` can contain transport diagnostics. Output failure stops the CLI.
+
+Bootstrap retry state contains only complete microdescriptor batches whose
+digest set exactly matches their request under a verified consensus. Invalid,
+duplicate, unsolicited or incomplete batches are never committed to that state.
+The next attempt reauthenticates certificates and consensus, discards irrelevant
+digests, and still requires the complete directory before exposing/persisting it.
+The 64 MiB catalog bound is checked incrementally; per-response and per-document
+bounds remain unchanged. Partial data is memory-only within one refresh, and
+verification/state/cleanup errors remain terminal. Guard selection and rollback
+protection are unchanged.
+
+SOCKS activity updates ignore `net.ErrClosed`/`io.ErrClosedPipe` from deadline
+setters after a peer closes. This prevents successful I/O from becoming a false
+failure that discards a buffered response. Other deadline failures still
+propagate; cancellation, idle deadlines and joined teardown remain in place.
+Current checks and their limits are recorded in [VALIDATION.md](VALIDATION.md).
+
 ## Shared guard channels and live policy — 2026-09-21
 
 Native clients and service hosts now own separate `channel.Pool` instances.
@@ -104,7 +150,7 @@ Code changes address 33 findings:
   verify that the opened inode still matches the checked entry. State writes
   also require a single filename component. These APIs are available in Go 1.24.
 
-## Reviewed exceptions
+## Reviewed exceptions (current inventory)
 
 Each exception names one rule at its exact import, expression, or field and
 includes its rationale. No numeric/indexing rules are suppressed.
@@ -112,7 +158,7 @@ includes its rationale. No numeric/indexing rules are suppressed.
 | Rules | Locations | Rationale |
 | --- | --- | --- |
 | G401 / G505 (13 annotations) | `directory/authority.go`, `directory/consensus.go`, `directory/fast.go`, `torcert/cert.go`, `relaycrypto/crypto.go` | Tor's legacy RSA fingerprints, authority certificate signatures, and original relay running digests use SHA-1. The directory verifier also retains verification-only support for legacy consensus signatures. The directory-only CREATE_FAST bootstrap also requires the SHA-1 KDF-TOR, inside a TLS channel authenticated against both pinned relay identities. Application circuits continue to use ntor. Replacing these with a different hash would change the authenticated wire data. SHA-256 remains in ntor, microdescriptor digests, cache consensus identity, and TLS certificate binding. |
-| G407 (3 annotations) | `relaycrypto/crypto.go`, `onion/ntor.go` | Tor's original AES-CTR cipher starts each direction at zero with a fresh per-hop key derived by ntor. Cipher counters persist across cells; callers must never reuse hop key material. The v3 service hop likewise uses a zero counter with a fresh hs-ntor AES-256 key. INTRODUCE1 uses a zero counter with a fresh ephemeral-derived key; the handshake rejects a second encryption. Randomizing the initial counter would break the wire protocol. |
+| G407 (4 annotations) | `relaycrypto/crypto.go`, `onion/ntor.go`, `onion/service.go` | Tor's original AES-CTR cipher starts each direction at zero with a fresh per-hop key derived by ntor. Cipher counters persist across cells; callers must never reuse hop key material. The v3 service hop likewise uses a zero counter with a fresh hs-ntor AES-256 key. INTRODUCE1 encryption and service-side decryption use a zero counter with fresh ephemeral-derived keys and replay protection. Randomizing the initial counter would break the wire protocol. |
 | G402 (1 annotation) | `channel/handshake.go` | Tor authenticates the exact TLS leaf through CERTS and both configured relay identity pins before exposing a channel. Ordinary Web PKI verification does not implement that authentication scheme. TLS session resumption is disabled. |
 | G304 (1 annotation) | `cmd/veil/directory.go` | Local CLI flags intentionally select files to inspect or use as bootstrap configuration. These paths never originate in relay messages or downloaded directory documents, and reads are bounded. |
 
@@ -128,12 +174,12 @@ To audit the annotations themselves, rerun with suppression disabled:
 gosec -nosec ./...
 ```
 
-That audit intentionally exits nonzero and reports exactly the 18 reviewed
+That audit intentionally exits nonzero and should report exactly the 19 reviewed
 exceptions above. It must not reveal additional integer, indexing, or unchecked
 error findings. An exception for a current Tor format does not authorize use of
 these primitives in unrelated or future features.
 
-## Verification
+## Initial verification (historical)
 
 - Normal gosec scan: passed, zero findings and zero loading errors.
 - Suppression-disabled audit: exactly 18 reviewed exceptions.
@@ -168,7 +214,7 @@ a private Tor network passed; details are in [VALIDATION.md](VALIDATION.md).
 ## Public bootstrap milestone follow-up
 
 Veil 0.8 adds two narrowly scoped protocol exceptions in `directory/fast.go`
-(G505 import and G401 SHA-1 KDF). The current total is **16**, including the
+(G505 import and G401 SHA-1 KDF). The total at that milestone was **16**, including the
 14 historical exceptions above. CREATE_FAST is private to the one-hop directory
 transport, uses fresh random inputs and constant-time key-confirmation checking,
 and is covered by Tor's published test vector and live public relay exchanges.
@@ -176,7 +222,7 @@ See [CREATE_FAST specification](https://spec.torproject.org/tor-spec/create-crea
 It provides no independent authentication or forward secrecy beyond the pinned
 TLS channel; it never carries application streams or extends to other hops.
 
-The complete directory budget is 64 MiB; per-document, compressed-wire and
+The complete microdescriptor catalog budget is now 64 MiB; per-document, compressed-wire and
 decompressed-output limits remain in force. Deflate decoding accepts the
 concatenated zlib streams required by the directory protocol without weakening
 document or digest verification. Public mode still requires a majority of all
@@ -198,7 +244,7 @@ trigger retries. Joined errors are retryable only when every component is
 retryable, so a local cleanup/state failure cannot be hidden by a network error.
 The same persistent guard store is used for every attempt.
 
-The current gosec scan covers **37 production files**, with **zero findings,
+The scan at that milestone covered **37 production files**, with **zero findings,
 zero loading errors and the unchanged 16 protocol annotations**. No new
 suppressions or dependencies were introduced. Race tests, vet, crash-release and
 cross-process contention checks passed; see [VALIDATION.md](VALIDATION.md).
