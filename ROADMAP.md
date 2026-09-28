@@ -120,7 +120,8 @@ and remaining limits are recorded in VALIDATION.md and README.md.
 - [x] Generate blinded signing keys and authenticated, encrypted descriptors.
 - [x] Establish introduction points, publish to overlapping HSDir rings and renew descriptors.
 - [x] Authenticate service-side hs-ntor requests, reject replays and join rendezvous circuits.
-- [x] Accept bounded incoming streams and forward one virtual port to a fixed loopback backend.
+- [x] Accept bounded incoming streams and forward one virtual port to a fixed loopback TCP or filesystem Unix socket backend.
+- [x] Provide a bounded HTTP/content reachability probe through an independently operated Tor SOCKS client and deployment guidance for backend isolation and Onion-Location.
 - [x] Expose `veil service`, with operational logs, optional debug/quiet modes and joined shutdown.
 - [x] Expose concurrent `Host.Status()` / `Listener.Status()` and opt-in CLI JSON status, including partial publication, per-period upload counts, retained introductions, retry timing and shutdown state.
 - [x] Verify private C Tor client interoperability: HTTP, concurrent multi-megabyte downloads, unmapped-port rejection and clean shutdown.

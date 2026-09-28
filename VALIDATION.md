@@ -4,6 +4,33 @@ The latest checks are recorded first. Older dated/versioned sections preserve
 their original results and then-current limitations; see README.md and ROADMAP.md
 for the present implementation and outstanding work.
 
+## Unix backends and independent-client reachability probe — 2026-09-28
+
+The service accepts `unix:/absolute/path.sock` alongside numeric loopback TCP
+backends. Local forwarding tests exercise both transports bidirectionally,
+cancellation and unavailable backends, and verify that a regular file at the
+socket path is rejected and preserved. Syntax tests reject non-loopback TCP,
+relative/abstract Unix paths, root paths and embedded NULs. The backend owns
+socket creation, permissions and cleanup.
+
+`scripts/onion_probe.py` checks a v3 onion URL through a separately operated
+SOCKS client, requiring HTTP 200 and an expected UTF-8 content marker. Real curl
+tests against a local SOCKS fixture verify remote hostname resolution, proxy
+bypass and `.curlrc` isolation, unexpected content, HTTP errors, rejection of
+redirects without follow-up requests, and the 1 MiB download bound for both
+Content-Length and chunked responses. Additional tests cover URL checksum and
+SOCKS endpoint validation, missing/timed-out curl and unsupported curl versions.
+
+`make check` passed: Go vet, the complete Go race/coverage suite and 15 Python
+tests. The final service/CLI race tests, production build, CLI/probe help checks
+and default gosec scan (zero findings) also passed. The SOCKS fixture is not
+C Tor and this run does not establish new public
+network or private C Tor interoperability evidence. The previous C Tor build
+directory no longer contains the test executables; Tor Browser supplies a Tor
+binary, but `tor-gencert` needed by `make service-check` was unavailable. Existing
+dated C Tor results below remain historical. Long-running publication/rotation
+and outage recovery on the public network remain unvalidated.
+
 ## Default CLI operational logs — 2026-09-27
 
 `veil proxy` and `veil service` now log startup, directory progress, readiness,

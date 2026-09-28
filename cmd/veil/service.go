@@ -18,7 +18,7 @@ func hostService(ctx context.Context, args []string, out, output io.Writer) (res
 	public := f.Bool("public", false, "use the public Tor network")
 	config := f.String("config", "", "trusted private-network bootstrap JSON")
 	state := f.String("state", "", "private service state directory; contains persistent onion identity and hostname")
-	target := f.String("target", "127.0.0.1:8080", "numeric loopback TCP backend")
+	target := f.String("target", "127.0.0.1:8080", "numeric loopback IP:port or unix:/absolute/path.sock backend")
 	port := f.Uint("port", 80, "onion service virtual TCP port")
 	debug := f.Bool("debug", false, "log service activity to stderr")
 	quiet := f.Bool("quiet", false, "suppress operational logs; fatal errors remain visible")

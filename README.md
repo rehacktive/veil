@@ -247,7 +247,7 @@ consensus. Services requiring the unsupported features may fail to connect.
 ## Host a v3 onion service
 
 The experimental native host exposes one onion TCP port. The CLI forwards it to
-a local TCP server; Go applications can accept native streams through a
+a loopback TCP server or a filesystem Unix socket; Go applications can accept native streams through a
 [`net.Listener`](#accept-onion-connections-in-go) without a local TCP backend.
 This example publishes a small website as a v3 hidden service on the public Tor
 network. You need Go and Python 3; Veil itself does not need a C Tor process.
@@ -372,7 +372,12 @@ overlapping publication periods, service-side hs-ntor, and native incoming
 streams. Publication is retried and renewed, introduction keys rotate, and
 failed introduction circuits are rebuilt without resetting persistent guards.
 Only the configured virtual port is accepted. The backend must be a numeric
-loopback address; client-supplied addresses are never dialed directly.
+loopback address or `unix:/absolute/path.sock`; client-supplied addresses are
+never dialed directly. Unix targets use stream sockets and require platform
+support. Relative paths, abstract sockets and embedded NULs are rejected.
+The backend may start after Veil; missing or inaccessible sockets reject incoming
+streams without falling back to TCP. Veil never creates, removes or changes the
+permissions of the backend socket.
 
 Defaults bound the host to 16 rendezvous circuits and 32 streams,
 5 minutes idle per forwarded stream and a 1-hour circuit lifetime. Replays are rejected,
@@ -419,6 +424,124 @@ loopback HTTP fixture; no public service is published. It builds a test-only
 binary with explicit localhost hops because normal subnet exclusions reject
 localhost networks. The `veiltest` helpers are absent from the production binary.
 C Tor is a test peer only; `veil service` itself needs no C Tor process.
+
+### Deploy with a dedicated backend
+
+Give each onion service a dedicated backend listener. Reusing a loopback port
+while Veil is still forwarding to it can unintentionally publish another
+application. A filesystem Unix socket avoids this TCP port collision and allows
+access control through filesystem permissions. On systems supporting Unix
+sockets, configure your backend to listen on a dedicated path, then run:
+
+```sh
+./bin/veil service -public -state ./state-service \
+  -port 80 -target unix:/run/veil-web/site.sock
+```
+
+`/run/veil-web/site.sock` is an example Linux runtime path. Create its parent
+directory with access restricted to the backend and Veil service accounts (for
+example, mode `0750` with a dedicated shared group). Ensure Veil can traverse
+the directory and connect to the socket; on Linux this requires socket write
+permission. Let the backend or its service manager own socket creation and
+cleanup. Use an appropriate short absolute runtime path on other systems, and
+recreate runtime directories after reboot. The directory must not be writable
+by unrelated users. Reusing the same socket path for another application still
+changes what Veil publishes.
+
+For Nginx, a dedicated socket and explicit default host prevent requests with an
+unexpected `Host` header from reaching another virtual host. Replace
+`<your-onion-address>.onion` with the hostname from `state-service/hostname`:
+
+```nginx
+server {
+    listen unix:/run/veil-web/site.sock default_server;
+    server_name _;
+    return 444;
+}
+
+server {
+    listen unix:/run/veil-web/site.sock;
+    server_name <your-onion-address>.onion;
+    root /srv/veil-site;
+    index index.html;
+
+    location = /healthz {
+        default_type text/plain;
+        return 200 "veil-site-ok\n";
+    }
+    location / {
+        try_files $uri $uri/ =404;
+    }
+}
+```
+
+Validate the configuration with `nginx -t` before reloading it. For a dynamic
+application, make its health endpoint check the dependencies that matter to
+readiness; the static response above only checks delivery through Tor and Nginx.
+Go applications using `service.Listen` can serve HTTP directly without either
+a TCP or Unix backend listener.
+
+### Check reachability through an independent Tor client
+
+`service_ready` and `-status-json` describe local publication state. Test actual
+delivery separately using an independently operated C Tor SOCKS client and
+Python 3 plus curl 8.4 or newer:
+
+```sh
+python3 scripts/onion_probe.py \
+  "http://$(cat ./state-service/hostname)/healthz" \
+  --socks 127.0.0.1:9050 --expect 'veil-site-ok' --timeout 180
+```
+
+For the Python quickstart page, probe `/` with `--expect 'Hello from Veil!'`.
+The SOCKS port must belong to your separate Tor client, not the Veil proxy under
+test. The probe cannot identify the SOCKS implementation for you. It does not
+start Tor, change guard state, or publish a service. A monitor on another machine
+can run its own local Tor client and use the same onion URL.
+
+Each invocation makes one HTTP GET, requires status 200 and the expected UTF-8
+substring, and prints one JSON result. Exit codes are `0` for success, `1` for a
+failed probe and `2` for invalid arguments. Responses are limited to 1 MiB;
+the timeout covers the request, with up to five additional seconds for curl
+version detection and five for subprocess cleanup. SOCKS performs hostname
+resolution, proxy bypass environment rules and `.curlrc` are ignored, redirects
+are not followed, and HTTPS certificate verification remains enabled. Response
+contents and the onion URL are omitted from the JSON; transport failures include
+curl's exit code. The supplied URL and marker can still be visible in process
+arguments, so do not put credentials in them.
+
+Run this from your monitoring system at a modest interval, recording latency
+and consecutive failures. Alert after repeated failures and on recovery to avoid
+treating one transient Tor timeout as a persistent outage. Check over several
+publication/rotation periods; one successful request does not demonstrate
+long-running availability. A fresh probe process may still use cached
+descriptors and circuits in its Tor client.
+
+### Advertise an onion mirror and keep navigation on it
+
+When a public HTTPS site intentionally advertises its onion mirror, add this
+header to its existing HTTPS server block (with the real onion hostname):
+
+```nginx
+add_header Onion-Location "http://<your-onion-address>.onion$request_uri" always;
+```
+
+Tor Browser can then offer the onion version while preserving the path and
+query. The advertising page must be HTTPS and must not itself be an onion page.
+This explicitly associates the public site and onion address. See the
+[Tor Project Onion-Location guide](https://community.torproject.org/onion-services/advanced/onion-location/).
+Veil forwards application bytes unchanged; the web server owns this header.
+
+Use relative links for same-site navigation and assets. Set absolute URLs in
+RSS, canonical links, redirects, forms and metadata to the intended origin;
+avoid deriving them from an unchecked `Host` header. Separate builds are useful
+when the site generator requires a fixed origin, but are not always necessary.
+Keep assets local where practical and reduce sequential network round trips.
+Server-rendered dynamic pages are supported; neither static-only content nor
+embedding every asset as base64 is required. HTTP keep-alive and caching remain
+useful. Onion transport already encrypts and authenticates the service connection;
+HTTPS may be needed for browser/application features, including browser HTTP/2.
+See [HTTPS for onion services](https://community.torproject.org/onion-services/advanced/https/).
 
 ### Accept onion connections in Go
 

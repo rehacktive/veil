@@ -9,12 +9,12 @@ import (
 )
 
 func TestBackendAndResourceBoundaries(t *testing.T) {
-	for _, target := range []string{"example.com:80", "192.0.2.1:80", "0.0.0.0:80", "127.0.0.1:0", "[::]:80", "[fe80::1%lo0]:80"} {
+	for _, target := range []string{"example.com:80", "192.0.2.1:80", "0.0.0.0:80", "127.0.0.1:0", "[::]:80", "[fe80::1%lo0]:80", "unix:", "unix:relative.sock", "unix:@abstract", "unix:/", "unix:/tmp/..", "unix:/tmp/a\x00b"} {
 		if _, err := New(&directory.Manager{}, &directory.GuardStore{}, &directory.ServiceIdentity{}, Options{Target: target, Port: 80}); err == nil {
 			t.Fatal("unsafe backend accepted", target)
 		}
 	}
-	for _, target := range []string{"127.0.0.1:8080", "[::1]:8080"} {
+	for _, target := range []string{"127.0.0.1:8080", "127.13.37.1:8080", "[::1]:8080", "unix:/tmp/veil-backend.sock"} {
 		if _, err := New(&directory.Manager{}, &directory.GuardStore{}, &directory.ServiceIdentity{}, Options{Target: target, Port: 80}); err != nil {
 			t.Fatal(err)
 		}

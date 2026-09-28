@@ -1,6 +1,28 @@
 # Security scanning
 
-## Current state — 2026-09-27
+## Backend isolation and reachability probes — 2026-09-28
+
+The forwarding host accepts a fixed numeric loopback TCP endpoint or an absolute
+filesystem Unix socket path. Targets are parsed at construction, never taken
+from an incoming stream. Unix backends use the same stream/circuit limits,
+deadlines and teardown as TCP. Missing or inaccessible sockets fail the stream;
+there is no transport fallback, unlink, chmod or automatic socket creation.
+Operators must restrict directory/socket access and dedicate the path to the
+intended application. Paths are not pinned to an inode: backend restarts may
+replace the socket, so a process allowed to replace it can change the backend.
+
+`scripts/onion_probe.py` uses a separately operated Tor SOCKS endpoint to check
+HTTP status and an expected content marker. It requires a checksum-valid v3
+onion URL and a numeric loopback SOCKS address, delegates DNS to SOCKS, disables
+proxy bypass, ignores `.curlrc`, follows no redirects and verifies HTTPS
+certificates. curl 8.4+ bounds downloaded bodies to 1 MiB, with request and
+subprocess timeouts. Temporary response files are removed after each probe.
+JSON excludes URL, response data and raw curl errors; process arguments still
+contain the requested URL and content marker. The probe cannot authenticate
+which implementation owns a SOCKS port. It does not prove anonymity, long-term
+availability, or application health beyond the chosen endpoint and marker.
+
+## CLI logs and scan snapshot — 2026-09-27
 
 The CLI now enables INFO lifecycle logs by default for `proxy` and `service`.
 They report coarse directory progress, local listener readiness, publication

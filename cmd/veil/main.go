@@ -23,7 +23,7 @@ const usage = `Veil: a native Go rewrite of Arti, stage 8 (SOCKS5, v3 onion clie
 Usage:
   veil version
   veil proxy (-public | -config FILE) -state DIRECTORY [-listen 127.0.0.1:9050] [-onion-only] [-debug | -quiet]
-  veil service (-public | -config FILE) -state DIRECTORY [-port 80] [-target 127.0.0.1:8080] [-debug | -quiet] [-status-json]
+  veil service (-public | -config FILE) -state DIRECTORY [-port 80] [-target IP:port|unix:/path.sock] [-debug | -quiet] [-status-json]
   veil inspect [-link 4|5] [-handshake] [-payload] < cells.bin
   veil channel-check -address IP:port -rsa HEX -ed25519 HEX [-timeout 30s]
   veil directory-check -certificates FILE -consensus FILE -microdescriptors FILE -authorities CSV [-at RFC3339]

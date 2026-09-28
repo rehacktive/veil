@@ -1,5 +1,5 @@
 // Package service hosts an experimental public v3 onion service over native Tor
-// circuits. It exposes one virtual port through a Listener or a loopback backend.
+// circuits. It exposes one virtual port through a Listener or a local backend.
 package service
 
 import (
@@ -13,6 +13,8 @@ import (
 	"math/big"
 	"net"
 	"net/netip"
+	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -26,7 +28,7 @@ import (
 
 type Options struct {
 	Port          uint16
-	Target        string // Numeric loopback backend for New; must be empty for Listen.
+	Target        string // Numeric loopback IP:port or unix:/absolute/path for New; empty for Listen.
 	Logger        *slog.Logger
 	MaxRendezvous int
 	MaxStreams    int // Total pending and active streams; default 32, maximum 256.
@@ -45,6 +47,8 @@ type Host struct {
 	source            snapshotSource
 	identity          *directory.ServiceIdentity
 	options           Options
+	backendNetwork    string
+	backendAddress    string
 	build             buildFunc
 	upload            func(context.Context, *directory.Snapshot, directory.Relay, []byte) error
 	selectIntro       func(*directory.Snapshot, []directory.Fingerprint) (directory.Relay, error)
@@ -66,14 +70,16 @@ func newHost(manager *directory.Manager, guards *directory.GuardStore, identity 
 	if options.Port == 0 {
 		return nil, errors.New("service requires a nonzero virtual port")
 	}
+	var network, address string
 	if listen {
 		if options.Target != "" {
 			return nil, errors.New("service listener does not use a target")
 		}
 	} else {
-		target, err := netip.ParseAddrPort(options.Target)
-		if err != nil || !target.Addr().IsLoopback() || target.Addr().Zone() != "" || target.Port() == 0 {
-			return nil, errors.New("service requires a numeric loopback target IP:port")
+		var err error
+		network, address, err = backendTarget(options.Target)
+		if err != nil {
+			return nil, err
 		}
 	}
 	if options.MaxRendezvous == 0 {
@@ -95,6 +101,7 @@ func newHost(manager *directory.Manager, guards *directory.GuardStore, identity 
 		return nil, errors.New("invalid service resource limits")
 	}
 	h := &Host{source: manager, channelPolicy: guards.LinkPaddingPolicy(), identity: identity, options: options, sessions: make(chan struct{}, options.MaxRendezvous), streams: make(chan struct{}, options.MaxStreams)}
+	h.backendNetwork, h.backendAddress = network, address
 	h.newIntroTimer = func() *time.Timer { return time.NewTimer(2 * time.Hour) }
 	h.newRetireTimer = time.AfterFunc
 	h.upload = h.uploadDescriptor
@@ -105,6 +112,23 @@ func newHost(manager *directory.Manager, guards *directory.GuardStore, identity 
 		return circuit.BuildInternal(ctx, s, guards, target, purpose, options.BuildTimeout, h.channels)
 	}
 	return h, nil
+}
+
+// Resolve syntax only: the backend may start after the host. Filesystem socket
+// ownership and access permissions belong to the operator; never unlink it here.
+func backendTarget(value string) (network, address string, err error) {
+	if strings.HasPrefix(value, "unix:") {
+		path := strings.TrimPrefix(value, "unix:")
+		if !filepath.IsAbs(path) || strings.ContainsRune(path, '\x00') || filepath.Clean(path) == string(filepath.Separator) {
+			return "", "", errors.New("service Unix target requires an absolute socket path")
+		}
+		return "unix", path, nil
+	}
+	target, err := netip.ParseAddrPort(value)
+	if err != nil || !target.Addr().IsLoopback() || target.Addr().Zone() != "" || target.Port() == 0 {
+		return "", "", errors.New("service requires a numeric loopback target IP:port or unix:/absolute/path")
+	}
+	return "tcp", value, nil
 }
 
 type introduction struct {
@@ -464,10 +488,10 @@ func equalBytes(a, b []byte) bool {
 	}
 	return true
 }
-func (h *Host) forward(ctx context.Context, request *circuit.IncomingStream) {
+func (h *Host) forward(ctx context.Context, request incomingStream) {
 	defer request.Close()
 	dialer := net.Dialer{Timeout: 10 * time.Second}
-	local, err := dialer.DialContext(ctx, "tcp", h.options.Target)
+	local, err := dialer.DialContext(ctx, h.backendNetwork, h.backendAddress)
 	if err != nil {
 		diagnostics.Log(ctx, h.options.Logger, "service_backend_failed", "error", err)
 		return
