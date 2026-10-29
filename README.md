@@ -942,6 +942,12 @@ Keep the directory current until interrupted:
 
 `directory-watch` restores verified cached state immediately, schedules a randomized refresh before expiry, and prints JSON when directory or retry status changes. `-timeout` optionally bounds the whole run. Refreshes use sampled directory guards after initial bootstrap. The manager uses capped, randomized retry delays; each download round shares one authenticated channel across separate one-hop circuits. Directory requests negotiate the Tor-mandated `deflate` encoding, accept concatenated zlib streams, and retain independent wire/decompressed size bounds. The manager reports completed and total microdescriptor counts, requests only descriptors absent from the cache, and verifies each response against the exact requested digest set.
 
+The client accepts TAP-free microdescriptors (`Microdesc=3`): the `onion-key`
+line still delimits each descriptor, but its legacy RSA key body may be absent.
+The required ntor key, descriptor digest binding and consensus signature checks
+remain enforced. The capability list also accepts `Desc=3`, whose removal of TAP
+keys from full router descriptors does not affect this microdescriptor-only path.
+
 `directory.NewManager(cache, guards, bootstrapRelays, options)` provides the same lifecycle to Go callers. `Run(ctx)` blocks until canceled or a verification/state error occurs; `Refresh(ctx)` performs one bounded download round. `BootstrapProgress()` returns a lock-safe UI snapshot with phase, readiness, completed/total microdescriptors and an integer percentage. Progress is explicitly indeterminate until the signed consensus supplies the descriptor total, so mobile integrations can show a spinner first and a progress bar afterward without inventing byte estimates. `Snapshot()` is safe to call concurrently and refuses expired or not-yet-valid data, even during an outage. A failed refresh retains the previous verified snapshot only within its validity interval. Authentication, document, clock-validity, rollback, and state-write errors stop the automatic loop rather than triggering indefinite retries.
 
 `directory.Cache.Load(now)` re-verifies every document; `Store` rejects an older or conflicting consensus. The manager authenticates expired caches at their original validation time. For up to 24 hours after expiry, it uses those descriptors solely to reconnect to already sampled directory guards. After longer offline periods, it downloads a fresh directory through the configured pinned bootstrap relays, preserving the guard sample and rollback protection. It returns to sampled directory guards once the fresh directory is verified and stored. Recovery never exposes expired snapshots as application directories or expands the sample from expired data. Corrupt caches and clocks earlier than the cached consensus still stop startup. `Snapshot.Valid(now)` and `Fresh(now)` distinguish validity from freshness. `-at` exists only for offline inspection.
@@ -1114,6 +1120,13 @@ Cipher and digest state persists across cells. Never reuse handshake secrets, sh
 make check  # vet, race detector, test coverage, Python measurement tests
 make security # gosec (requires an installed gosec executable)
 make fuzz   # twelve bounded 10-second fuzz runs
+```
+
+To check bootstrap against the current public Tor consensus with temporary
+state (opt-in; allows up to ten minutes for network downloads):
+
+```sh
+VEIL_TOR_INTEGRATION=1 go test -v ./directory -run '^TestMainnetBootstrap$' -count=1 -timeout=11m
 ```
 
 The gosec scan uses all default rules. Narrow protocol/CLI exceptions and their

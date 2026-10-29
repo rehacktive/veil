@@ -4,6 +4,31 @@ The latest checks are recorded first. Older dated/versioned sections preserve
 their original results and then-current limitations; see README.md and ROADMAP.md
 for the present implementation and outstanding work.
 
+## TAP-free directory compatibility — 2026-10-29
+
+The supported client protocol list now includes `Microdesc=1-3` and `Desc=1-4`.
+The microdescriptor parser already accepts an absent legacy RSA TAP key body
+while requiring the `onion-key` delimiter and a nonzero ntor key. Full router
+descriptors are neither fetched nor parsed by this client, so the TAP removal
+in `Desc=3` requires no new full-descriptor parser.
+
+`TestTAPFreeDirectory` verifies independently signed directories with legacy,
+TAP-free and mixed microdescriptors. It checks relay identities and ntor keys
+against the original directory, rejects altered descriptor digests and consensus
+signatures, and rejects future unsupported Desc/Microdesc versions and ranges.
+The initial regression reproduced the `Microdesc=3` bootstrap failure.
+
+`make check` passed (vet, full Go race/coverage suite and 15 Python tests), as did
+`CGO_ENABLED=0 go build -trimpath -o bin/veil ./cmd/veil`.
+
+The new opt-in `TestMainnetBootstrap` passed against public Tor in 66.08 seconds,
+using temporary private state and the bundled authority/fallback pins. It
+verified eight authority signatures and 9,184 relays. The authenticated consensus
+required `Cons=2 Desc=2-3 FlowCtrl=1 Link=4 Microdesc=2-3 Relay=2`; its valid-after
+was 2026-10-29 17:00 UTC and valid-until was 20:00 UTC. No existing node state was
+used. This check covers directory bootstrap; public onion hosting and messaging
+were not repeated for this change.
+
 ## Unix backends and independent-client reachability probe — 2026-09-28
 
 The service accepts `unix:/absolute/path.sock` alongside numeric loopback TCP

@@ -124,7 +124,11 @@ func verifyConsensus(raw []byte, set *authoritySet, now time.Time) (*consensus, 
 	if err != nil {
 		return nil, err
 	}
-	supported, _ := parseProtocols([]string{"Cons=1-2", "Desc=1-2,4", "DirCache=1-2", "FlowCtrl=1", "Link=4-5", "Microdesc=1-2", "Relay=2"})
+	// Microdesc=3 permits an absent TAP key body. parseMicrodescriptor already
+	// accepts this while retaining the onion-key delimiter and requiring ntor.
+	// Desc=3 removes TAP keys from full router descriptors, which this
+	// microdescriptor-only client neither fetches nor parses.
+	supported, _ := parseProtocols([]string{"Cons=1-2", "Desc=1-4", "DirCache=1-2", "FlowCtrl=1", "Link=4-5", "Microdesc=1-3", "Relay=2"})
 	for name, ranges := range required {
 		for _, r := range ranges {
 			for v := r.low; ; v++ {
